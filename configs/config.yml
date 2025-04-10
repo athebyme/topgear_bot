@@ -1,0 +1,19 @@
+bot:
+  token: "${TELEGRAM_BOT_TOKEN}" # Берем из переменной окружения
+  debug: false
+
+database:
+  host: "localhost" # В Docker будет переопределено
+  port: "5432"
+  user: "forza"
+  password: "forza_password"
+  dbname: "forza_db"
+  sslmode: "disable"
+
+admin:
+  # ID пользователей Telegram, которые будут администраторами
+  # Добавь свой ID после получения через @userinfobot
+  users: []
+
+# Флаг для определения, работаем ли мы в Docker
+is_dockerized: false

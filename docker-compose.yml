@@ -1,0 +1,67 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    container_name: forza-bot
+    restart: always
+    depends_on:
+      - postgres
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-forza}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-forza_password}
+      - POSTGRES_DB=${POSTGRES_DB:-forza_db}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - IS_DOCKERIZED=true
+    volumes:
+      - ./configs:/app/configs
+    networks:
+      - forza-network
+
+  postgres:
+    image: postgres:14-alpine
+    container_name: forza-postgres
+    restart: always
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-forza}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-forza_password}
+      - POSTGRES_DB=${POSTGRES_DB:-forza_db}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - forza-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-forza}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  cars-parser:
+    build:
+      context: .
+      dockerfile: Dockerfile.parser
+    container_name: forza-parser
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-forza}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-forza_password}
+      - POSTGRES_DB=${POSTGRES_DB:-forza_db}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+    volumes:
+      - ./scripts:/app/scripts
+    networks:
+      - forza-network
+
+volumes:
+  postgres-data:
+
+networks:
+  forza-network:
+    driver: bridge

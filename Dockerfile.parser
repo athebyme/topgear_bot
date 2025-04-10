@@ -1,0 +1,16 @@
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# Установка зависимостей
+COPY ./scripts/parser/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Создание директории если она не существует
+RUN mkdir -p /app/scripts/parser
+
+# Копирование скрипта
+COPY ./scripts/parser /app/scripts/parser/
+
+# Запуск парсера
+CMD ["python", "/app/scripts/parser/forza_cars_parser.py"]

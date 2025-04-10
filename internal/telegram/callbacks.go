@@ -12,9 +12,8 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-// registerCallbackHandlers регистрирует обработчики callback-запросов
 func (b *Bot) registerCallbackHandlers() {
-	// Создаем обработчики для каждого типа callback-запроса
+	// Существующие обработчики
 	b.CallbackHandlers = map[string]CallbackHandler{
 		"races":               b.callbackRaces,
 		"seasons":             b.callbackSeasons,
@@ -51,9 +50,15 @@ func (b *Bot) registerCallbackHandlers() {
 		"stats_season":        b.callbackStatsForSeason,
 		"race_progress":       b.callbackRaceProgress,
 		"admin_confirm_car":   b.callbackAdminConfirmCar,
-		"leaderboard":         b.callbackLeaderboard, // Добавлен обработчик для лидерборда
+		"leaderboard":         b.callbackLeaderboard,
+
+		// Добавляем новые обработчики
+		"admin_confirm_all_cars": b.callbackAdminConfirmAllCars,
+		"admin_add_result":       b.callbackAdminAddResult,
+		"admin_select_place":     b.callbackAdminSelectPlace,
 	}
 
+	// Регистрация существующих обработчиков
 	b.CallbackHandlers["start_race"] = b.callbackStartRace
 	b.CallbackHandlers["register_race"] = b.callbackRegisterRace
 	b.CallbackHandlers["driver_command"] = b.callbackDriverCommand
@@ -68,7 +73,6 @@ func (b *Bot) registerCallbackHandlers() {
 	b.CallbackHandlers["race_detailed_status"] = b.callbackRaceDetailedStatus
 	b.CallbackHandlers["activerace"] = b.callbackActiveRace
 	b.CommandHandlers["startrace"] = b.handleStartRace
-
 }
 
 // handleStartRace позволяет запустить гонку через команду
@@ -2015,85 +2019,6 @@ func (b *Bot) callbackAdminRacePanel(query *tgbotapi.CallbackQuery) {
 	b.showAdminRacePanel(chatID, raceID)
 
 	// Удаляем исходное сообщение
-	b.deleteMessage(chatID, messageID)
-}
-
-// callbackAdminEditResultsMenu показывает меню редактирования результатов
-func (b *Bot) callbackAdminEditResultsMenu(query *tgbotapi.CallbackQuery) {
-	userID := query.From.ID
-	chatID := query.Message.Chat.ID
-	messageID := query.Message.MessageID
-
-	// Проверяем, является ли пользователь администратором
-	if !b.IsAdmin(userID) {
-		b.answerCallbackQuery(query.ID, "⛔ У вас нет прав администратора", true)
-		return
-	}
-
-	// Извлекаем ID гонки из данных запроса
-	parts := strings.Split(query.Data, ":")
-	if len(parts) < 2 {
-		b.answerCallbackQuery(query.ID, "⚠️ Неверный формат запроса", true)
-		return
-	}
-
-	raceID, err := strconv.Atoi(parts[1])
-	if err != nil {
-		b.answerCallbackQuery(query.ID, "⚠️ Неверный ID гонки", true)
-		return
-	}
-
-	// Получаем информацию о гонке
-	race, err := b.RaceRepo.GetByID(raceID)
-	if err != nil {
-		log.Printf("Ошибка получения информации о гонке: %v", err)
-		b.answerCallbackQuery(query.ID, "⚠️ Произошла ошибка при получении информации о гонке", true)
-		return
-	}
-
-	if race == nil {
-		b.answerCallbackQuery(query.ID, "⚠️ Гонка не найдена", true)
-		return
-	}
-
-	// Получаем результаты гонки
-	results, err := b.ResultRepo.GetRaceResultsWithDriverNames(raceID)
-	if err != nil {
-		log.Printf("Ошибка получения результатов: %v", err)
-		b.answerCallbackQuery(query.ID, "⚠️ Произошла ошибка при получении результатов", true)
-		return
-	}
-
-	// Формируем сообщение с результатами для редактирования
-	text := fmt.Sprintf("✏️ *Редактирование результатов гонки: %s*\n\n", race.Name)
-
-	if len(results) == 0 {
-		text += "Для этой гонки еще нет результатов."
-	} else {
-		text += "Выберите гонщика для редактирования результатов:"
-	}
-
-	// Создаем клавиатуру для выбора гонщика
-	var keyboard [][]tgbotapi.InlineKeyboardButton
-
-	for _, result := range results {
-		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData(
-				fmt.Sprintf("%s - %d очков", result.DriverName, result.TotalScore),
-				fmt.Sprintf("admin_edit_result:%d", result.ID),
-			),
-		))
-	}
-
-	keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
-		tgbotapi.NewInlineKeyboardButtonData(
-			"🔙 Назад к админ-панели",
-			fmt.Sprintf("admin_race_panel:%d", raceID),
-		),
-	))
-
-	// Отправляем новое сообщение и удаляем старое
-	b.sendMessageWithKeyboard(chatID, text, tgbotapi.NewInlineKeyboardMarkup(keyboard...))
 	b.deleteMessage(chatID, messageID)
 }
 

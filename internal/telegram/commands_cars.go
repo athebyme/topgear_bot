@@ -386,6 +386,9 @@ func (b *Bot) notifyDriversAboutCarAssignments(raceID int) {
 		return
 	}
 
+	// Logging for debugging
+	log.Printf("Отправка уведомлений о машинах для %d гонщиков", len(registrations))
+
 	for _, reg := range registrations {
 		// Get driver's Telegram ID
 		var telegramID int64
@@ -422,7 +425,7 @@ func (b *Bot) notifyDriversAboutCarAssignments(raceID int) {
 		text += fmt.Sprintf("🚦 Старт: %.1f/10\n", car.Launch)
 		text += fmt.Sprintf("🛑 Торможение: %.1f/10\n\n", car.Braking)
 		text += fmt.Sprintf("🏆 Класс: %s %d\n\n", car.ClassLetter, car.ClassNumber)
-		text += "*У вас есть возможность сделать реролл машины (получить другую), но это будет стоить -1 балл в итоговом зачете.*"
+		text += "*У вас есть возможность сделать реролл машины (получить другую), но это будет стоить -1 балл в итоговом зачете гонки.*"
 
 		// Create keyboard for confirmation or reroll
 		keyboard := tgbotapi.NewInlineKeyboardMarkup(
@@ -440,12 +443,18 @@ func (b *Bot) notifyDriversAboutCarAssignments(raceID int) {
 			),
 		)
 
+		// Explicitly log before sending to debug issues
+		log.Printf("Отправка уведомления о машине гонщику %d (telegramID: %d)", reg.DriverID, telegramID)
+
 		// Send message with keyboard and car image if available
+		var sentMsg tgbotapi.Message
 		if car.ImageURL != "" {
-			b.sendPhotoWithKeyboard(telegramID, car.ImageURL, text, keyboard)
+			sentMsg = b.sendPhotoWithKeyboard(telegramID, car.ImageURL, text, keyboard)
 		} else {
-			b.sendMessageWithKeyboard(telegramID, text, keyboard)
+			sentMsg = b.sendMessageWithKeyboard(telegramID, text, keyboard)
 		}
+
+		log.Printf("Уведомление отправлено гонщику %d, ID сообщения: %d", reg.DriverID, sentMsg.MessageID)
 	}
 }
 

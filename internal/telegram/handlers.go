@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"fmt"
+	"github.com/athebyme/forza-top-gear-bot/internal/repository"
 	"log"
 	"strconv"
 	"strings"
@@ -643,7 +644,6 @@ func (b *Bot) handleJoinRace(message *tgbotapi.Message) {
 	)
 }
 
-// handleMyCar with corrected message
 func (b *Bot) handleMyCar(message *tgbotapi.Message) {
 	userID := message.From.ID
 	chatID := message.Chat.ID
@@ -657,10 +657,10 @@ func (b *Bot) handleMyCar(message *tgbotapi.Message) {
 	}
 
 	if driver == nil {
-		// FIXED: Changed from "/start" to "/register"
 		b.sendMessage(chatID, "⚠️ Вы не зарегистрированы как гонщик. Используйте /register чтобы зарегистрироваться.")
 		return
 	}
+
 	// Get active race
 	activeRace, err := b.RaceRepo.GetActiveRace()
 	if err != nil {
@@ -703,14 +703,21 @@ func (b *Bot) handleMyCar(message *tgbotapi.Message) {
 	// Check if driver has confirmed their car
 	var confirmed bool
 	err = b.db.QueryRow(`
-		SELECT car_confirmed FROM race_registrations
-		WHERE race_id = $1 AND driver_id = $2
-	`, activeRace.ID, driver.ID).Scan(&confirmed)
+        SELECT car_confirmed FROM race_registrations
+        WHERE race_id = $1 AND driver_id = $2
+    `, activeRace.ID, driver.ID).Scan(&confirmed)
 
 	if err != nil {
 		log.Printf("Ошибка получения статуса подтверждения: %v", err)
 		b.sendMessage(chatID, "⚠️ Произошла ошибка при проверке статуса подтверждения машины.")
 		return
+	}
+
+	// Check if reroll was already used
+	rerollUsed, err := b.ResultRepo.GetDriverRerollStatus(activeRace.ID, driver.ID)
+	if err != nil {
+		log.Printf("Ошибка проверки статуса реролла: %v", err)
+		rerollUsed = false // Default to false if error
 	}
 
 	// Format car information
@@ -737,12 +744,6 @@ func (b *Bot) handleMyCar(message *tgbotapi.Message) {
 
 	// Only show confirmation/reroll buttons if not yet confirmed
 	if !confirmed {
-		// Check if reroll was already used
-		rerollUsed, err := b.ResultRepo.GetDriverRerollStatus(activeRace.ID, driver.ID)
-		if err != nil {
-			log.Printf("Ошибка проверки статуса реролла: %v", err)
-		}
-
 		// Add confirm button
 		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData(
@@ -760,7 +761,33 @@ func (b *Bot) handleMyCar(message *tgbotapi.Message) {
 				),
 			))
 		}
+	} else {
+		// If car is confirmed, show button to view race status
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"📊 Статус гонки",
+				fmt.Sprintf("race_progress:%d", activeRace.ID),
+			),
+		))
+
+		// Add button to add results if the race is in progress
+		if activeRace.State == models.RaceStateInProgress {
+			keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					"➕ Добавить результат",
+					fmt.Sprintf("add_result:%d", activeRace.ID),
+				),
+			))
+		}
 	}
+
+	// Add back button
+	keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData(
+			"🔙 Назад к гонке",
+			fmt.Sprintf("race_details:%d", activeRace.ID),
+		),
+	))
 
 	// Send message with keyboard and car image if available
 	if car.ImageURL != "" {
@@ -843,4 +870,537 @@ func (b *Bot) handleLeaveRace(message *tgbotapi.Message) {
 		"🏁 *Отмена регистрации на гонку*\n\nВыберите гонку для отмены регистрации:",
 		tgbotapi.NewInlineKeyboardMarkup(keyboard...),
 	)
+}
+
+func (b *Bot) callbackAdminConfirmAllCars(query *tgbotapi.CallbackQuery) {
+	userID := query.From.ID
+	chatID := query.Message.Chat.ID
+
+	// Check admin rights
+	if !b.IsAdmin(userID) {
+		b.answerCallbackQuery(query.ID, "⛔ У вас нет прав администратора", true)
+		return
+	}
+
+	// Parse race ID from callback data
+	parts := strings.Split(query.Data, ":")
+	if len(parts) < 2 {
+		b.answerCallbackQuery(query.ID, "⚠️ Неверный формат запроса", true)
+		return
+	}
+
+	raceID, err := strconv.Atoi(parts[1])
+	if err != nil {
+		b.answerCallbackQuery(query.ID, "⚠️ Неверный ID гонки", true)
+		return
+	}
+
+	// Get all registered drivers
+	registrations, err := b.RaceRepo.GetRegisteredDrivers(raceID)
+	if err != nil {
+		log.Printf("Ошибка получения зарегистрированных гонщиков: %v", err)
+		b.answerCallbackQuery(query.ID, "⚠️ Произошла ошибка при получении списка участников", true)
+		return
+	}
+
+	// Confirm all unconfirmed cars
+	var confirmedCount int
+	for _, reg := range registrations {
+		if !reg.CarConfirmed {
+			err = b.RaceRepo.UpdateCarConfirmation(raceID, reg.DriverID, true)
+			if err != nil {
+				log.Printf("Ошибка подтверждения машины для гонщика %d: %v", reg.DriverID, err)
+				continue
+			}
+			confirmedCount++
+		}
+	}
+
+	// Send confirmation message
+	b.answerCallbackQuery(query.ID, fmt.Sprintf("✅ Подтверждено %d машин", confirmedCount), false)
+	b.sendMessage(chatID, fmt.Sprintf("✅ Вы подтвердили машины для %d гонщиков", confirmedCount))
+
+	// Refresh admin panel
+	b.showAdminRacePanel(chatID, raceID)
+
+	// Delete the original message
+	b.deleteMessage(chatID, query.Message.MessageID)
+}
+
+func (b *Bot) callbackAdminEditResultsMenu(query *tgbotapi.CallbackQuery) {
+	userID := query.From.ID
+	chatID := query.Message.Chat.ID
+	messageID := query.Message.MessageID
+
+	// Check admin rights
+	if !b.IsAdmin(userID) {
+		b.answerCallbackQuery(query.ID, "⛔ У вас нет прав администратора", true)
+		return
+	}
+
+	// Parse race ID from callback data
+	parts := strings.Split(query.Data, ":")
+	if len(parts) < 2 {
+		b.answerCallbackQuery(query.ID, "⚠️ Неверный формат запроса", true)
+		return
+	}
+
+	raceID, err := strconv.Atoi(parts[1])
+	if err != nil {
+		b.answerCallbackQuery(query.ID, "⚠️ Неверный ID гонки", true)
+		return
+	}
+
+	// Get race information
+	race, err := b.RaceRepo.GetByID(raceID)
+	if err != nil {
+		log.Printf("Ошибка получения информации о гонке: %v", err)
+		b.answerCallbackQuery(query.ID, "⚠️ Произошла ошибка при получении информации о гонке", true)
+		return
+	}
+
+	if race == nil {
+		b.answerCallbackQuery(query.ID, "⚠️ Гонка не найдена", true)
+		return
+	}
+
+	// Get all registered drivers
+	registrations, err := b.RaceRepo.GetRegisteredDrivers(raceID)
+	if err != nil {
+		log.Printf("Ошибка получения зарегистрированных гонщиков: %v", err)
+		b.answerCallbackQuery(query.ID, "⚠️ Произошла ошибка при получении списка участников", true)
+		return
+	}
+
+	// Get race results
+	results, err := b.ResultRepo.GetRaceResultsWithDriverNames(raceID)
+	if err != nil {
+		log.Printf("Ошибка получения результатов: %v", err)
+		b.answerCallbackQuery(query.ID, "⚠️ Произошла ошибка при получении результатов", true)
+		return
+	}
+
+	// Create a map of driver IDs to results
+	resultsByDriverID := make(map[int]*repository.RaceResultWithDriver)
+	for _, result := range results {
+		resultsByDriverID[result.DriverID] = result
+	}
+
+	// Format message
+	text := fmt.Sprintf("✏️ *Редактирование результатов гонки: %s*\n\n", race.Name)
+	text += fmt.Sprintf("📅 Дата: %s\n", b.formatDate(race.Date))
+	text += fmt.Sprintf("🚗 Класс: %s\n", race.CarClass)
+	text += fmt.Sprintf("🏎️ Дисциплины: %s\n\n", strings.Join(race.Disciplines, ", "))
+
+	text += "*Участники и результаты:*\n\n"
+
+	// Create keyboard
+	var keyboard [][]tgbotapi.InlineKeyboardButton
+
+	// Add buttons for each driver - either to edit existing result or add new one
+	for _, reg := range registrations {
+		result, hasResult := resultsByDriverID[reg.DriverID]
+
+		// Add driver info to text
+		if hasResult {
+			text += fmt.Sprintf("• *%s* - %d очков ✅\n", reg.DriverName, result.TotalScore)
+
+			// Add button to edit result
+			keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					fmt.Sprintf("✏️ %s", reg.DriverName),
+					fmt.Sprintf("admin_edit_result:%d", result.ID),
+				),
+			))
+		} else {
+			text += fmt.Sprintf("• *%s* - нет результата ❌\n", reg.DriverName)
+
+			// Add button to add result
+			keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					fmt.Sprintf("➕ %s", reg.DriverName),
+					fmt.Sprintf("admin_add_result:%d:%d", raceID, reg.DriverID),
+				),
+			))
+		}
+	}
+
+	// Add back button
+	keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData(
+			"🔙 Назад к админ-панели",
+			fmt.Sprintf("admin_race_panel:%d", raceID),
+		),
+	))
+
+	// Send message with keyboard
+	b.sendMessageWithKeyboard(chatID, text, tgbotapi.NewInlineKeyboardMarkup(keyboard...))
+
+	// Delete the original message
+	b.deleteMessage(chatID, messageID)
+}
+
+func (b *Bot) callbackAdminAddResult(query *tgbotapi.CallbackQuery) {
+	userID := query.From.ID
+	chatID := query.Message.Chat.ID
+	messageID := query.Message.MessageID
+
+	// Check admin rights
+	if !b.IsAdmin(userID) {
+		b.answerCallbackQuery(query.ID, "⛔ У вас нет прав администратора", true)
+		return
+	}
+
+	// Parse parameters from callback data (admin_add_result:raceID:driverID)
+	parts := strings.Split(query.Data, ":")
+	if len(parts) < 3 {
+		b.answerCallbackQuery(query.ID, "⚠️ Неверный формат запроса", true)
+		return
+	}
+
+	raceID, err := strconv.Atoi(parts[1])
+	if err != nil {
+		b.answerCallbackQuery(query.ID, "⚠️ Неверный ID гонки", true)
+		return
+	}
+
+	driverID, err := strconv.Atoi(parts[2])
+	if err != nil {
+		b.answerCallbackQuery(query.ID, "⚠️ Неверный ID гонщика", true)
+		return
+	}
+
+	// Get race information
+	race, err := b.RaceRepo.GetByID(raceID)
+	if err != nil {
+		log.Printf("Ошибка получения информации о гонке: %v", err)
+		b.answerCallbackQuery(query.ID, "⚠️ Произошла ошибка при получении информации о гонке", true)
+		return
+	}
+
+	// Get driver information
+	var driverName string
+	err = b.db.QueryRow("SELECT name FROM drivers WHERE id = $1", driverID).Scan(&driverName)
+	if err != nil {
+		log.Printf("Ошибка получения имени гонщика: %v", err)
+		b.answerCallbackQuery(query.ID, "⚠️ Произошла ошибка при получении данных гонщика", true)
+		return
+	}
+
+	// Get car assignment
+	assignment, err := b.CarRepo.GetDriverCarAssignment(raceID, driverID)
+	if err != nil || assignment == nil {
+		log.Printf("Ошибка получения назначения машины: %v", err)
+		b.answerCallbackQuery(query.ID, "⚠️ Гонщику не назначена машина", true)
+		return
+	}
+
+	// Set up state for adding result with pre-filled car info
+	b.StateManager.SetState(userID, "admin_add_result_discipline", map[string]interface{}{
+		"race_id":     raceID,
+		"driver_id":   driverID,
+		"driver_name": driverName,
+		"car_number":  assignment.AssignmentNumber,
+		"car_name":    assignment.Car.Name + " (" + assignment.Car.Year + ")",
+		"car_photo":   assignment.Car.ImageURL,
+		"disciplines": race.Disciplines,
+		"current_idx": 0,
+		"results":     make(map[string]int),
+	})
+
+	// Format message
+	text := fmt.Sprintf("✏️ *Добавление результата для гонщика %s*\n\n", driverName)
+	text += fmt.Sprintf("🚗 Машина: %s (№%d)\n\n", assignment.Car.Name, assignment.AssignmentNumber)
+
+	// Check if driver used reroll
+	var rerollUsed bool
+	err = b.db.QueryRow(`
+        SELECT reroll_used FROM race_registrations
+        WHERE race_id = $1 AND driver_id = $2
+    `, raceID, driverID).Scan(&rerollUsed)
+
+	if err == nil && rerollUsed {
+		text += "⚠️ *Был использован реролл* (-1 балл к результату)\n\n"
+	}
+
+	// First discipline
+	disciplineName := race.Disciplines[0]
+	text += fmt.Sprintf("Выберите место в дисциплине '*%s*':", disciplineName)
+
+	// Create place selection keyboard
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"🥇 1 место",
+				fmt.Sprintf("admin_select_place:%d:%d:%s:1", raceID, driverID, disciplineName),
+			),
+			tgbotapi.NewInlineKeyboardButtonData(
+				"🥈 2 место",
+				fmt.Sprintf("admin_select_place:%d:%d:%s:2", raceID, driverID, disciplineName),
+			),
+			tgbotapi.NewInlineKeyboardButtonData(
+				"🥉 3 место",
+				fmt.Sprintf("admin_select_place:%d:%d:%s:3", raceID, driverID, disciplineName),
+			),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"❌ Не участвовал",
+				fmt.Sprintf("admin_select_place:%d:%d:%s:0", raceID, driverID, disciplineName),
+			),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"🔙 Отмена",
+				fmt.Sprintf("admin_edit_results_menu:%d", raceID),
+			),
+		),
+	)
+
+	// Send message with keyboard
+	b.sendMessageWithKeyboard(chatID, text, keyboard)
+
+	// Delete the original message
+	b.deleteMessage(chatID, messageID)
+}
+
+func (b *Bot) callbackAdminSelectPlace(query *tgbotapi.CallbackQuery) {
+	userID := query.From.ID
+	chatID := query.Message.Chat.ID
+	messageID := query.Message.MessageID
+
+	// Check admin rights
+	if !b.IsAdmin(userID) {
+		b.answerCallbackQuery(query.ID, "⛔ У вас нет прав администратора", true)
+		return
+	}
+
+	// Parse parameters from callback data (admin_select_place:raceID:driverID:discipline:place)
+	parts := strings.Split(query.Data, ":")
+	if len(parts) < 5 {
+		b.answerCallbackQuery(query.ID, "⚠️ Неверный формат запроса", true)
+		return
+	}
+
+	raceID, err := strconv.Atoi(parts[1])
+	if err != nil {
+		b.answerCallbackQuery(query.ID, "⚠️ Неверный ID гонки", true)
+		return
+	}
+
+	driverID, err := strconv.Atoi(parts[2])
+	if err != nil {
+		b.answerCallbackQuery(query.ID, "⚠️ Неверный ID гонщика", true)
+		return
+	}
+
+	disciplineName := parts[3]
+
+	place, err := strconv.Atoi(parts[4])
+	if err != nil || place < 0 || place > 3 {
+		b.answerCallbackQuery(query.ID, "⚠️ Неверное значение места", true)
+		return
+	}
+
+	// Get state
+	state, exists := b.StateManager.GetState(userID)
+	if !exists || state.State != "admin_add_result_discipline" {
+		b.answerCallbackQuery(query.ID, "⚠️ Неверное состояние", true)
+		return
+	}
+
+	// Update results in state
+	results := state.ContextData["results"].(map[string]int)
+	results[disciplineName] = place
+
+	// Get race disciplines
+	race, err := b.RaceRepo.GetByID(raceID)
+	if err != nil {
+		b.answerCallbackQuery(query.ID, "⚠️ Ошибка получения информации о гонке", true)
+		return
+	}
+
+	// Get current discipline index
+	var currentIdx int
+	for i, d := range race.Disciplines {
+		if d == disciplineName {
+			currentIdx = i
+			break
+		}
+	}
+
+	// Move to next discipline or complete
+	currentIdx++
+
+	if currentIdx < len(race.Disciplines) {
+		// Update state for next discipline
+		b.StateManager.SetState(userID, "admin_add_result_discipline", map[string]interface{}{
+			"race_id":     state.ContextData["race_id"],
+			"driver_id":   state.ContextData["driver_id"],
+			"driver_name": state.ContextData["driver_name"],
+			"car_number":  state.ContextData["car_number"],
+			"car_name":    state.ContextData["car_name"],
+			"car_photo":   state.ContextData["car_photo"],
+			"disciplines": race.Disciplines,
+			"current_idx": currentIdx,
+			"results":     results,
+		})
+
+		// Show next discipline selection
+		nextDiscipline := race.Disciplines[currentIdx]
+
+		// Update message with progress and next discipline
+		text := fmt.Sprintf("✏️ *Добавление результата для гонщика %s*\n\n", state.ContextData["driver_name"])
+		text += fmt.Sprintf("🚗 Машина: %s\n\n", state.ContextData["car_name"])
+
+		// Show previous selections
+		text += "*Выбранные места:*\n"
+		for i := 0; i < currentIdx; i++ {
+			disc := race.Disciplines[i]
+			placeEmoji := getPlaceEmoji(results[disc])
+			placeText := getPlaceText(results[disc])
+			text += fmt.Sprintf("• %s: %s %s\n", disc, placeEmoji, placeText)
+		}
+
+		text += fmt.Sprintf("\nВыберите место в дисциплине '*%s*':", nextDiscipline)
+
+		// Create keyboard for next discipline
+		keyboard := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					"🥇 1 место",
+					fmt.Sprintf("admin_select_place:%d:%d:%s:1", raceID, driverID, nextDiscipline),
+				),
+				tgbotapi.NewInlineKeyboardButtonData(
+					"🥈 2 место",
+					fmt.Sprintf("admin_select_place:%d:%d:%s:2", raceID, driverID, nextDiscipline),
+				),
+				tgbotapi.NewInlineKeyboardButtonData(
+					"🥉 3 место",
+					fmt.Sprintf("admin_select_place:%d:%d:%s:3", raceID, driverID, nextDiscipline),
+				),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					"❌ Не участвовал",
+					fmt.Sprintf("admin_select_place:%d:%d:%s:0", raceID, driverID, nextDiscipline),
+				),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					"🔙 Отмена",
+					fmt.Sprintf("admin_edit_results_menu:%d", raceID),
+				),
+			),
+		)
+
+		// Update message
+		b.editMessageWithKeyboard(chatID, messageID, text, keyboard)
+	} else {
+		// All disciplines completed, save result
+		// Calculate total score
+		totalScore := 0
+		for _, place := range results {
+			switch place {
+			case 1:
+				totalScore += 3
+			case 2:
+				totalScore += 2
+			case 3:
+				totalScore += 1
+			}
+		}
+
+		// Check if driver used reroll
+		rerollUsed, err := b.ResultRepo.GetDriverRerollStatus(raceID, driverID)
+		if err != nil {
+			log.Printf("Ошибка проверки статуса реролла: %v", err)
+			rerollUsed = false // Default to false if error
+		}
+
+		// Apply reroll penalty
+		rerollPenalty := 0
+		if rerollUsed {
+			rerollPenalty = 1
+			totalScore -= rerollPenalty
+		}
+
+		// Get car assignment for photo
+		assignment, err := b.CarRepo.GetDriverCarAssignment(raceID, driverID)
+		if err != nil || assignment == nil {
+			log.Printf("Ошибка получения назначения машины: %v", err)
+
+			// Clear state and show error
+			b.StateManager.ClearState(userID)
+			b.editMessage(chatID, messageID, "⚠️ Произошла ошибка при получении информации о машине.")
+			return
+		}
+
+		// Create race result
+		result := &models.RaceResult{
+			RaceID:        raceID,
+			DriverID:      driverID,
+			CarNumber:     state.ContextData["car_number"].(int),
+			CarName:       state.ContextData["car_name"].(string),
+			CarPhotoURL:   state.ContextData["car_photo"].(string),
+			Results:       results,
+			TotalScore:    totalScore,
+			RerollPenalty: rerollPenalty,
+		}
+
+		// Save to database
+		var resultID int
+		if rerollPenalty > 0 {
+			resultID, err = b.ResultRepo.CreateWithRerollPenalty(result)
+		} else {
+			resultID, err = b.ResultRepo.Create(result)
+		}
+
+		if err != nil {
+			log.Printf("Ошибка сохранения результата: %v", err)
+
+			// Clear state and show error
+			b.StateManager.ClearState(userID)
+			b.editMessage(chatID, messageID, "⚠️ Произошла ошибка при сохранении результата.")
+			return
+		}
+
+		// Clear state
+		b.StateManager.ClearState(userID)
+
+		// Show success message
+		text := fmt.Sprintf("✅ *Результат для гонщика %s успешно добавлен!*\n\n", state.ContextData["driver_name"])
+		text += "*Итоговые места:*\n"
+
+		for _, discipline := range race.Disciplines {
+			placeEmoji := getPlaceEmoji(results[discipline])
+			placeText := getPlaceText(results[discipline])
+			text += fmt.Sprintf("• %s: %s %s\n", discipline, placeEmoji, placeText)
+		}
+
+		if rerollPenalty > 0 {
+			text += fmt.Sprintf("\n⚠️ Штраф за реролл: -%d\n", rerollPenalty)
+		}
+
+		text += fmt.Sprintf("\n🏆 Всего очков: %d\n", totalScore)
+
+		// Add buttons to edit result or go back to menu
+		keyboard := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					"✏️ Редактировать этот результат",
+					fmt.Sprintf("admin_edit_result:%d", resultID),
+				),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					"🔙 Назад к списку результатов",
+					fmt.Sprintf("admin_edit_results_menu:%d", raceID),
+				),
+			),
+		)
+
+		// Update message
+		b.editMessageWithKeyboard(chatID, messageID, text, keyboard)
+	}
 }

@@ -1712,7 +1712,7 @@ func (b *Bot) handleAdminRace(message *tgbotapi.Message) {
 
 // showAdminRacePanel показывает панель администратора для конкретной гонки
 func (b *Bot) showAdminRacePanel(chatID int64, raceID int) {
-	// Получаем информацию о гонке
+	// Get race information
 	race, err := b.RaceRepo.GetByID(raceID)
 	if err != nil {
 		log.Printf("Ошибка получения информации о гонке: %v", err)
@@ -1725,15 +1725,15 @@ func (b *Bot) showAdminRacePanel(chatID int64, raceID int) {
 		return
 	}
 
-	// Получаем количество зарегистрированных гонщиков
+	// Get registered drivers with car confirmation status
 	registrations, err := b.RaceRepo.GetRegisteredDrivers(raceID)
 	if err != nil {
-		log.Printf("Ошибка получения регистраций: %v", err)
+		log.Printf("Ошибка получения зарегистрированных гонщиков: %v", err)
 		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении списка участников.")
 		return
 	}
 
-	// Получаем количество поданных результатов
+	// Get results count
 	resultsCount, err := b.ResultRepo.GetResultCountByRaceID(raceID)
 	if err != nil {
 		log.Printf("Ошибка получения количества результатов: %v", err)
@@ -1741,7 +1741,7 @@ func (b *Bot) showAdminRacePanel(chatID int64, raceID int) {
 		return
 	}
 
-	// Формируем сообщение с админ-панелью
+	// Format message with admin panel
 	text := fmt.Sprintf("⚙️ *Админ-панель гонки: %s*\n\n", race.Name)
 	text += fmt.Sprintf("📅 Дата: %s\n", b.formatDate(race.Date))
 	text += fmt.Sprintf("🚗 Класс: %s\n", race.CarClass)
@@ -1751,13 +1751,25 @@ func (b *Bot) showAdminRacePanel(chatID int64, raceID int) {
 	text += fmt.Sprintf("👨‍🏎️ Участников: %d\n", len(registrations))
 	text += fmt.Sprintf("📊 Подано результатов: %d\n\n", resultsCount)
 
-	// Добавляем статусы гонщиков
+	// Add driver statuses
 	text += "*Статусы участников:*\n"
+
+	var (
+		confirmedCount     int
+		unconfirmedDrivers []int
+	)
+
 	for i, reg := range registrations {
-		statusText := "⏳ ожидает"
+		var statusText string
+
 		if reg.CarConfirmed {
 			statusText = "✅ подтвердил"
+			confirmedCount++
+		} else {
+			statusText = "⏳ ожидает"
+			unconfirmedDrivers = append(unconfirmedDrivers, reg.DriverID)
 		}
+
 		if reg.RerollUsed {
 			statusText += ", 🎲 реролл"
 		}
@@ -1765,10 +1777,10 @@ func (b *Bot) showAdminRacePanel(chatID int64, raceID int) {
 		text += fmt.Sprintf("%d. %s - %s\n", i+1, reg.DriverName, statusText)
 	}
 
-	// Создаем клавиатуру для управления гонкой
+	// Create keyboard for race management
 	var keyboard [][]tgbotapi.InlineKeyboardButton
 
-	// Кнопки в зависимости от состояния гонки
+	// Buttons based on race state
 	switch race.State {
 	case models.RaceStateNotStarted:
 		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
@@ -1777,14 +1789,45 @@ func (b *Bot) showAdminRacePanel(chatID int64, raceID int) {
 				fmt.Sprintf("start_race:%d", raceID),
 			),
 		))
-	case models.RaceStateInProgress:
+
 		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData(
-				"👨‍🏎️ Участники",
-				fmt.Sprintf("race_registrations:%d", raceID),
+				"📨 Отправить напоминание",
+				fmt.Sprintf("admin_send_notifications:%d:reminder", raceID),
 			),
+		))
+
+	case models.RaceStateInProgress:
+		// If there are any unconfirmed cars, show button to force confirmation
+		if len(unconfirmedDrivers) > 0 {
+			keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					"✅ Подтвердить все машины",
+					fmt.Sprintf("admin_confirm_all_cars:%d", raceID),
+				),
+			))
+
+			// Add individual confirm buttons for each unconfirmed driver
+			for _, driverID := range unconfirmedDrivers {
+				// Get driver name
+				var driverName string
+				err := b.db.QueryRow("SELECT name FROM drivers WHERE id = $1", driverID).Scan(&driverName)
+				if err != nil {
+					continue
+				}
+
+				keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+					tgbotapi.NewInlineKeyboardButtonData(
+						fmt.Sprintf("✅ Подтвердить машину: %s", driverName),
+						fmt.Sprintf("admin_force_confirm_car:%d:%d", raceID, driverID),
+					),
+				))
+			}
+		}
+
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData(
-				"🚗 Машины",
+				"📊 Просмотр машин",
 				fmt.Sprintf("view_race_cars:%d", raceID),
 			),
 		))
@@ -1798,12 +1841,35 @@ func (b *Bot) showAdminRacePanel(chatID int64, raceID int) {
 
 		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData(
+				"📨 Отправить уведомления о машинах",
+				fmt.Sprintf("admin_send_notifications:%d:cars", raceID),
+			),
+		))
+
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
 				"✅ Завершить гонку",
 				fmt.Sprintf("complete_race:%d", raceID),
 			),
 		))
+
+	case models.RaceStateCompleted:
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"📨 Отправить результаты",
+				fmt.Sprintf("admin_send_notifications:%d:results", raceID),
+			),
+		))
+
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"🏆 Просмотр результатов",
+				fmt.Sprintf("race_results:%d", raceID),
+			),
+		))
 	}
 
+	// Add back button
 	keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
 		tgbotapi.NewInlineKeyboardButtonData(
 			"🔙 Назад к гонке",

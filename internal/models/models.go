@@ -23,7 +23,27 @@ type Season struct {
 	Active    bool      `json:"active"`
 }
 
-// Race представляет гонку
+// Race state constants
+const (
+	RaceStateNotStarted = "not_started"
+	RaceStateInProgress = "in_progress"
+	RaceStateCompleted  = "completed"
+)
+
+// RaceRegistration represents a driver's registration for a race
+type RaceRegistration struct {
+	ID           int       `json:"id"`
+	RaceID       int       `json:"race_id"`
+	DriverID     int       `json:"driver_id"`
+	RegisteredAt time.Time `json:"registered_at"`
+	CarConfirmed bool      `json:"car_confirmed"`
+	RerollUsed   bool      `json:"reroll_used"`
+
+	// Virtual fields for UI
+	DriverName string `json:"driver_name,omitempty"`
+}
+
+// Update the Race model to include state
 type Race struct {
 	ID          int       `json:"id"`
 	SeasonID    int       `json:"season_id"`
@@ -32,18 +52,36 @@ type Race struct {
 	CarClass    string    `json:"car_class"`
 	Disciplines []string  `json:"disciplines"`
 	Completed   bool      `json:"completed"`
+	State       string    `json:"state"`
 }
 
-// RaceResult представляет результаты гонщика в гонке
+// Update RaceResult to include reroll penalty
 type RaceResult struct {
-	ID          int            `json:"id"`
-	RaceID      int            `json:"race_id"`
-	DriverID    int            `json:"driver_id"`
-	CarNumber   int            `json:"car_number"`
-	CarName     string         `json:"car_name"`
-	CarPhotoURL string         `json:"car_photo_url"`
-	Results     map[string]int `json:"results"` // discipline -> place
-	TotalScore  int            `json:"total_score"`
+	ID            int            `json:"id"`
+	RaceID        int            `json:"race_id"`
+	DriverID      int            `json:"driver_id"`
+	CarNumber     int            `json:"car_number"`
+	CarName       string         `json:"car_name"`
+	CarPhotoURL   string         `json:"car_photo_url"`
+	Results       map[string]int `json:"results"` // discipline -> place
+	TotalScore    int            `json:"total_score"`
+	RerollPenalty int            `json:"reroll_penalty"`
+}
+
+// Update RaceCarAssignment to track rerolls
+type RaceCarAssignment struct {
+	ID               int       `json:"id"`
+	RaceID           int       `json:"race_id"`
+	DriverID         int       `json:"driver_id"`
+	CarID            int       `json:"car_id"`
+	AssignmentNumber int       `json:"assignment_number"`
+	CreatedAt        time.Time `json:"created_at"`
+	IsReroll         bool      `json:"is_reroll"`
+	PreviousCarID    int       `json:"previous_car_id"`
+
+	// Nested data
+	Car        *Car   `json:"car,omitempty"`
+	DriverName string `json:"driver_name,omitempty"`
 }
 
 // SerializeDisciplines сериализует список дисциплин в JSON

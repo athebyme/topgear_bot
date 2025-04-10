@@ -72,7 +72,27 @@ var migrations = []string{
 		assignment_number INTEGER NOT NULL,
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	)`,
+	`ALTER TABLE races 
+	ADD COLUMN state VARCHAR(20) NOT NULL DEFAULT 'not_started' 
+	CHECK (state IN ('not_started', 'in_progress', 'completed'));`,
 
+	`
+	CREATE TABLE IF NOT EXISTS race_registrations (
+		id SERIAL PRIMARY KEY,
+		race_id INTEGER REFERENCES races(id) ON DELETE CASCADE,
+		driver_id INTEGER REFERENCES drivers(id),
+		registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		car_confirmed BOOLEAN DEFAULT FALSE,
+		reroll_used BOOLEAN DEFAULT FALSE,
+		UNIQUE(race_id, driver_id)
+	);`,
+
+	`	ALTER TABLE race_car_assignments
+	ADD COLUMN is_reroll BOOLEAN DEFAULT FALSE,
+	ADD COLUMN previous_car_id INTEGER REFERENCES cars(id);`,
+
+	`	ALTER TABLE race_results
+	ADD COLUMN reroll_penalty INTEGER DEFAULT 0;`,
 	// Индексы
 	`CREATE INDEX IF NOT EXISTS idx_races_season_id ON races(season_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_race_results_race_id ON race_results(race_id)`,

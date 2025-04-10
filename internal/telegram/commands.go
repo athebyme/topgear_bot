@@ -11,7 +11,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-// registerCommandHandlers регистрирует обработчики команд
+// registerCommandHandlers registers all command handlers
 func (b *Bot) registerCommandHandlers() {
 	b.CommandHandlers = map[string]CommandHandler{
 		"start":     b.handleStart,
@@ -24,21 +24,24 @@ func (b *Bot) registerCommandHandlers() {
 		"help":      b.handleHelp,
 		"addresult": b.handleAddResult,
 		"cancel":    b.handleCancel,
+		"joinrace":  b.handleJoinRace,
+		"leaverage": b.handleLeaveRace,
+		"mycar":     b.handleMyCar,
 	}
 }
 
-// handleStart обрабатывает команду /start
+// handleStart provides main menu and starting point
 func (b *Bot) handleStart(message *tgbotapi.Message) {
 	userID := message.From.ID
 	chatID := message.Chat.ID
 
-	// Проверяем регистрацию пользователя
+	// Check if user is already registered
 	driver, err := b.DriverRepo.GetByTelegramID(userID)
 	if err != nil {
 		log.Printf("Ошибка получения данных гонщика: %v", err)
 	}
 
-	// Создаем клавиатуру с основными командами
+	// Create keyboard with main commands
 	keyboard := MainKeyboard()
 
 	var messageText string
@@ -51,36 +54,12 @@ func (b *Bot) handleStart(message *tgbotapi.Message) {
 	b.sendMessageWithKeyboard(chatID, messageText, keyboard)
 }
 
-// handleRegister обрабатывает команду /register
-func (b *Bot) handleRegister(message *tgbotapi.Message) {
-	userID := message.From.ID
-	chatID := message.Chat.ID
-
-	// Проверяем, не зарегистрирован ли уже пользователь
-	exists, err := b.DriverRepo.CheckExists(userID)
-	if err != nil {
-		log.Printf("Ошибка проверки существования гонщика: %v", err)
-		b.sendMessage(chatID, "⚠️ Произошла ошибка при проверке регистрации. Пожалуйста, попробуйте позже.")
-		return
-	}
-
-	if exists {
-		b.sendMessage(chatID, "✅ Вы уже зарегистрированы как гонщик. Используйте /driver для просмотра своей карточки.")
-		return
-	}
-
-	// Запускаем процесс регистрации
-	b.StateManager.SetState(userID, "register_name", make(map[string]interface{}))
-
-	b.sendMessage(chatID, "📝 Регистрация нового гонщика\n\nВведите ваше гоночное имя:")
-}
-
-// handleDriver обрабатывает команду /driver
+// handleDriver with corrected message
 func (b *Bot) handleDriver(message *tgbotapi.Message) {
 	userID := message.From.ID
 	chatID := message.Chat.ID
 
-	// Получаем данные гонщика
+	// Get driver data
 	driver, err := b.DriverRepo.GetByTelegramID(userID)
 	if err != nil {
 		log.Printf("Ошибка получения данных гонщика: %v", err)
@@ -89,6 +68,7 @@ func (b *Bot) handleDriver(message *tgbotapi.Message) {
 	}
 
 	if driver == nil {
+		// FIXED: Changed from "/start" to "/register"
 		b.sendMessage(chatID, "⚠️ Вы не зарегистрированы как гонщик. Используйте /register чтобы зарегистрироваться.")
 		return
 	}
@@ -177,58 +157,6 @@ func (b *Bot) handleSeasons(message *tgbotapi.Message) {
 	b.sendMessageWithKeyboard(chatID, text, keyboard)
 }
 
-// handleRaces обрабатывает команду /races
-func (b *Bot) handleRaces(message *tgbotapi.Message) {
-	userID := message.From.ID
-	chatID := message.Chat.ID
-
-	// Получаем активный сезон
-	activeSeason, err := b.SeasonRepo.GetActive()
-	if err != nil {
-		log.Printf("Ошибка получения активного сезона: %v", err)
-		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении активного сезона.")
-		return
-	}
-
-	if activeSeason == nil {
-		b.sendMessage(chatID, "⚠️ Не найден активный сезон.")
-		return
-	}
-
-	// Получаем гонки активного сезона
-	races, err := b.RaceRepo.GetBySeason(activeSeason.ID)
-	if err != nil {
-		log.Printf("Ошибка получения гонок: %v", err)
-		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении списка гонок.")
-		return
-	}
-
-	text := fmt.Sprintf("🏁 *Гонки %s*\n\n", activeSeason.Name)
-
-	if len(races) == 0 {
-		text += "В этом сезоне пока нет запланированных гонок."
-	} else {
-		for _, race := range races {
-			var status string
-			if race.Completed {
-				status = "✅ Завершена"
-			} else {
-				status = "🕑 Предстоит"
-			}
-
-			text += fmt.Sprintf("*%s* (%s)\n", race.Name, status)
-			text += fmt.Sprintf("📅 %s\n", b.formatDate(race.Date))
-			text += fmt.Sprintf("🚗 Класс: %s\n", race.CarClass)
-			text += fmt.Sprintf("🏎️ Дисциплины: %s\n\n", strings.Join(race.Disciplines, ", "))
-		}
-	}
-
-	// Создаем клавиатуру с гонками
-	keyboard := RacesKeyboard(races, b.IsAdmin(userID))
-
-	b.sendMessageWithKeyboard(chatID, text, keyboard)
-}
-
 // handleNewRace обрабатывает команду /newrace
 func (b *Bot) handleNewRace(message *tgbotapi.Message) {
 	userID := message.From.ID
@@ -296,7 +224,7 @@ func (b *Bot) handleResults(message *tgbotapi.Message) {
 	b.sendMessageWithKeyboard(chatID, text, tgbotapi.NewInlineKeyboardMarkup(keyboard...))
 }
 
-// handleHelp обрабатывает команду /help
+// handleHelp provides documentation for all commands
 func (b *Bot) handleHelp(message *tgbotapi.Message) {
 	chatID := message.Chat.ID
 
@@ -310,14 +238,20 @@ func (b *Bot) handleHelp(message *tgbotapi.Message) {
 /seasons - Просмотр сезонов
 /races - Просмотр гонок текущего сезона
 /results - Просмотр результатов гонок
-/addresult - Добавить свой результат в гонке
 /help - Эта справка
 /cancel - Отмена текущего действия
+
+*Команды для участия в гонках:*
+/joinrace - Регистрация на предстоящую гонку
+/leaverage - Отмена регистрации на гонку
+/mycar - Просмотр назначенной машины для текущей гонки
+/addresult - Добавить свой результат в текущей гонке
 
 *Система подсчета очков:*
 🥇 1 место - 3 очка
 🥈 2 место - 2 очка
 🥉 3 место - 1 очко
+⚠️ Реролл машины - штраф -1 очко
 
 *Дисциплины:*
 • Визуал
@@ -325,66 +259,15 @@ func (b *Bot) handleHelp(message *tgbotapi.Message) {
 • Круговая гонка (3 круга)
 • Офроад
 • Гонка от А к Б
-• Ралли (на время)`
+• Ралли (на время)
+
+*Процесс гонки:*
+1. Регистрация на гонку через /joinrace
+2. После начала гонки всем участникам будут назначены машины
+3. Вы можете принять машину или использовать реролл (со штрафом -1 очко)
+4. После подтверждения машины вводите результаты по дисциплинам`
 
 	b.sendMessage(chatID, text)
-}
-
-// handleAddResult обрабатывает команду /addresult
-func (b *Bot) handleAddResult(message *tgbotapi.Message) {
-	userID := message.From.ID
-	chatID := message.Chat.ID
-
-	// Получаем данные гонщика
-	driver, err := b.DriverRepo.GetByTelegramID(userID)
-	if err != nil {
-		log.Printf("Ошибка получения данных гонщика: %v", err)
-		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении данных гонщика.")
-		return
-	}
-
-	if driver == nil {
-		b.sendMessage(chatID, "⚠️ Вы не зарегистрированы как гонщик. Используйте /register чтобы зарегистрироваться.")
-		return
-	}
-
-	// Получаем незавершенные гонки
-	races, err := b.RaceRepo.GetIncompleteRaces()
-	if err != nil {
-		log.Printf("Ошибка получения гонок: %v", err)
-		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении списка гонок.")
-		return
-	}
-
-	if len(races) == 0 {
-		b.sendMessage(chatID, "⚠️ Нет доступных гонок для добавления результатов.")
-		return
-	}
-
-	// Фильтруем гонки, где гонщик еще не добавил результат
-	var availableRaces []*models.Race
-
-	for _, race := range races {
-		exists, err := b.ResultRepo.CheckDriverResultExists(race.ID, driver.ID)
-		if err != nil {
-			log.Printf("Ошибка проверки результата гонщика: %v", err)
-			continue
-		}
-
-		if !exists {
-			availableRaces = append(availableRaces, race)
-		}
-	}
-
-	if len(availableRaces) == 0 {
-		b.sendMessage(chatID, "⚠️ Нет доступных гонок для добавления результатов или вы уже добавили результаты во все незавершенные гонки.")
-		return
-	}
-
-	// Создаем клавиатуру с доступными гонками
-	keyboard := IncompleteRacesKeyboard(availableRaces)
-
-	b.sendMessageWithKeyboard(chatID, "🏁 *Добавление результата*\n\nВыберите гонку для добавления результата:", keyboard)
 }
 
 // handleCancel обрабатывает команду /cancel
@@ -400,10 +283,8 @@ func (b *Bot) handleCancel(message *tgbotapi.Message) {
 	}
 }
 
-// handleStateInput обрабатывает ввод пользователя в зависимости от его состояния
+// handleStateInput routes input to appropriate handler based on state
 func (b *Bot) handleStateInput(message *tgbotapi.Message, state models.UserState) {
-	chatID := message.Chat.ID
-
 	switch state.State {
 	case "register_name":
 		b.handleRegisterName(message, state)
@@ -436,31 +317,11 @@ func (b *Bot) handleStateInput(message *tgbotapi.Message, state models.UserState
 	case "new_season_start_date":
 		b.handleNewSeasonStartDate(message, state)
 	default:
-		b.sendMessage(chatID, "⚠️ Неизвестное состояние. Используйте /cancel для отмены текущего действия.")
+		b.sendMessage(message.Chat.ID, "⚠️ Неизвестное состояние. Используйте /cancel для отмены текущего действия.")
 	}
 }
 
 // Обработчики состояний пользователя
-
-// handleRegisterName обрабатывает ввод имени при регистрации
-func (b *Bot) handleRegisterName(message *tgbotapi.Message, state models.UserState) {
-	userID := message.From.ID
-	chatID := message.Chat.ID
-
-	// Проверяем валидность имени
-	name := strings.TrimSpace(message.Text)
-	if len(name) < 2 || len(name) > 30 {
-		b.sendMessage(chatID, "⚠️ Имя должно содержать от 2 до 30 символов. Пожалуйста, введите корректное имя:")
-		return
-	}
-
-	// Сохраняем имя в контексте и запрашиваем описание
-	b.StateManager.SetState(userID, "register_description", map[string]interface{}{
-		"name": name,
-	})
-
-	b.sendMessage(chatID, fmt.Sprintf("Отлично, %s! Теперь введите краткое описание о себе как о гонщике (или отправьте '-' чтобы пропустить):", name))
-}
 
 // handleRegisterDescription обрабатывает ввод описания при регистрации
 func (b *Bot) handleRegisterDescription(message *tgbotapi.Message, state models.UserState) {
@@ -954,4 +815,95 @@ func (b *Bot) handleNewSeasonStartDate(message *tgbotapi.Message, state models.U
 
 	// Показываем список сезонов
 	b.handleSeasons(message)
+}
+
+// handleLeaveRace with corrected message
+func (b *Bot) handleLeaveRace(message *tgbotapi.Message) {
+	userID := message.From.ID
+	chatID := message.Chat.ID
+
+	// Get driver information
+	driver, err := b.DriverRepo.GetByTelegramID(userID)
+	if err != nil {
+		log.Printf("Ошибка получения данных гонщика: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении данных гонщика.")
+		return
+	}
+
+	if driver == nil {
+		// FIXED: Changed from "/start" to "/register"
+		b.sendMessage(chatID, "⚠️ Вы не зарегистрированы как гонщик. Используйте /register чтобы зарегистрироваться.")
+		return
+	}
+
+	// Get upcoming races
+	upcomingRaces, err := b.RaceRepo.GetUpcomingRaces()
+	if err != nil {
+		log.Printf("Ошибка получения предстоящих гонок: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении списка предстоящих гонок.")
+		return
+	}
+
+	// Filter races where driver is registered
+	var registeredRaces []*models.Race
+
+	for _, race := range upcomingRaces {
+		registered, err := b.RaceRepo.CheckDriverRegistered(race.ID, driver.ID)
+		if err != nil {
+			log.Printf("Ошибка проверки регистрации: %v", err)
+			continue
+		}
+
+		if registered {
+			registeredRaces = append(registeredRaces, race)
+		}
+	}
+
+	if len(registeredRaces) == 0 {
+		b.sendMessage(chatID, "⚠️ Вы не зарегистрированы ни на одну предстоящую гонку.")
+		return
+	}
+
+	// Create keyboard with registered races
+	var keyboard [][]tgbotapi.InlineKeyboardButton
+
+	for _, race := range registeredRaces {
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				race.Name,
+				fmt.Sprintf("unregister_race:%d", race.ID),
+			),
+		))
+	}
+
+	b.sendMessageWithKeyboard(
+		chatID,
+		"🏁 *Отмена регистрации на гонку*\n\nВыберите гонку для отмены регистрации:",
+		tgbotapi.NewInlineKeyboardMarkup(keyboard...),
+	)
+}
+
+// Updated handleRegisterName to properly handle driver registration
+func (b *Bot) handleRegisterName(message *tgbotapi.Message, state models.UserState) {
+	userID := message.From.ID
+	chatID := message.Chat.ID
+
+	log.Printf("Processing driver name for user ID: %d", userID)
+
+	// Check name validity
+	name := strings.TrimSpace(message.Text)
+	log.Printf("Provided name: '%s', length: %d", name, len(name))
+
+	if len(name) < 2 || len(name) > 30 {
+		b.sendMessage(chatID, "⚠️ Имя должно содержать от 2 до 30 символов. Пожалуйста, введите корректное имя:")
+		return
+	}
+
+	// Save name in context and request description
+	log.Printf("Setting state to register_description with name: %s", name)
+	b.StateManager.SetState(userID, "register_description", map[string]interface{}{
+		"name": name,
+	})
+
+	b.sendMessage(chatID, fmt.Sprintf("Отлично, %s! Теперь введите краткое описание о себе как о гонщике (или отправьте '-' чтобы пропустить):", name))
 }

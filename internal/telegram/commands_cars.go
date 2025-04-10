@@ -229,3 +229,467 @@ func (b *Bot) assignRandomCarsForRace(raceID int, carClass string) error {
 
 	return nil
 }
+
+// registerRaceFlowCommandHandlers registers handlers for race flow commands
+func (b *Bot) registerRaceFlowCommandHandlers() {
+	// Add to existing CommandHandlers
+	b.CommandHandlers["joinrace"] = b.handleJoinRace // New command for race registration
+	b.CommandHandlers["leaverage"] = b.handleUnregisterFromRace
+	b.CommandHandlers["register"] = b.handleRegisterForRace
+	b.CommandHandlers["unregister"] = b.handleUnregisterFromRace
+	b.CommandHandlers["mycar"] = b.handleMyCar
+}
+
+// handleRegisterForRace handles the /register command to register for an upcoming race
+func (b *Bot) handleRegisterForRace(message *tgbotapi.Message) {
+	userID := message.From.ID
+	chatID := message.Chat.ID
+
+	// Get driver information
+	driver, err := b.DriverRepo.GetByTelegramID(userID)
+	if err != nil {
+		log.Printf("Ошибка получения данных гонщика: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении данных гонщика.")
+		return
+	}
+
+	if driver == nil {
+		b.sendMessage(chatID, "⚠️ Вы не зарегистрированы как гонщик. Используйте /start чтобы начать регистрацию.")
+		return
+	}
+
+	// Get upcoming races
+	upcomingRaces, err := b.RaceRepo.GetUpcomingRaces()
+	if err != nil {
+		log.Printf("Ошибка получения предстоящих гонок: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении списка предстоящих гонок.")
+		return
+	}
+
+	if len(upcomingRaces) == 0 {
+		b.sendMessage(chatID, "⚠️ Сейчас нет предстоящих гонок для регистрации.")
+		return
+	}
+
+	// Create keyboard with upcoming races
+	var keyboard [][]tgbotapi.InlineKeyboardButton
+
+	for _, race := range upcomingRaces {
+		registered, err := b.RaceRepo.CheckDriverRegistered(race.ID, driver.ID)
+		if err != nil {
+			log.Printf("Ошибка проверки регистрации: %v", err)
+			continue
+		}
+
+		var buttonText string
+		var callbackData string
+
+		if registered {
+			buttonText = fmt.Sprintf("✅ %s", race.Name)
+			callbackData = fmt.Sprintf("unregister_race:%d", race.ID)
+		} else {
+			buttonText = race.Name
+			callbackData = fmt.Sprintf("register_race:%d", race.ID)
+		}
+
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(buttonText, callbackData),
+		))
+	}
+
+	b.sendMessageWithKeyboard(
+		chatID,
+		"🏁 *Регистрация на гонку*\n\nВыберите гонку для регистрации:",
+		tgbotapi.NewInlineKeyboardMarkup(keyboard...),
+	)
+}
+
+// handleUnregisterFromRace handles the /unregister command to unregister from an upcoming race
+func (b *Bot) handleUnregisterFromRace(message *tgbotapi.Message) {
+	userID := message.From.ID
+	chatID := message.Chat.ID
+
+	// Get driver information
+	driver, err := b.DriverRepo.GetByTelegramID(userID)
+	if err != nil {
+		log.Printf("Ошибка получения данных гонщика: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении данных гонщика.")
+		return
+	}
+
+	if driver == nil {
+		b.sendMessage(chatID, "⚠️ Вы не зарегистрированы как гонщик. Используйте /start чтобы начать регистрацию.")
+		return
+	}
+
+	// Get upcoming races
+	upcomingRaces, err := b.RaceRepo.GetUpcomingRaces()
+	if err != nil {
+		log.Printf("Ошибка получения предстоящих гонок: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении списка предстоящих гонок.")
+		return
+	}
+
+	// Filter races where driver is registered
+	var registeredRaces []*models.Race
+
+	for _, race := range upcomingRaces {
+		registered, err := b.RaceRepo.CheckDriverRegistered(race.ID, driver.ID)
+		if err != nil {
+			log.Printf("Ошибка проверки регистрации: %v", err)
+			continue
+		}
+
+		if registered {
+			registeredRaces = append(registeredRaces, race)
+		}
+	}
+
+	if len(registeredRaces) == 0 {
+		b.sendMessage(chatID, "⚠️ Вы не зарегистрированы ни на одну предстоящую гонку.")
+		return
+	}
+
+	// Create keyboard with registered races
+	var keyboard [][]tgbotapi.InlineKeyboardButton
+
+	for _, race := range registeredRaces {
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				race.Name,
+				fmt.Sprintf("unregister_race:%d", race.ID),
+			),
+		))
+	}
+
+	b.sendMessageWithKeyboard(
+		chatID,
+		"🏁 *Отмена регистрации на гонку*\n\nВыберите гонку для отмены регистрации:",
+		tgbotapi.NewInlineKeyboardMarkup(keyboard...),
+	)
+}
+
+// handleMyCar with corrected message
+func (b *Bot) handleMyCar(message *tgbotapi.Message) {
+	userID := message.From.ID
+	chatID := message.Chat.ID
+
+	// Get driver information
+	driver, err := b.DriverRepo.GetByTelegramID(userID)
+	if err != nil {
+		log.Printf("Ошибка получения данных гонщика: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении данных гонщика.")
+		return
+	}
+
+	if driver == nil {
+		// FIXED: Changed from "/start" to "/register"
+		b.sendMessage(chatID, "⚠️ Вы не зарегистрированы как гонщик. Используйте /register чтобы зарегистрироваться.")
+		return
+	}
+
+	// Get active race
+	activeRace, err := b.RaceRepo.GetActiveRace()
+	if err != nil {
+		log.Printf("Ошибка получения активной гонки: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении информации об активной гонке.")
+		return
+	}
+
+	if activeRace == nil {
+		b.sendMessage(chatID, "⚠️ Сейчас нет активной гонки.")
+		return
+	}
+
+	// Check if driver is registered for this race
+	registered, err := b.RaceRepo.CheckDriverRegistered(activeRace.ID, driver.ID)
+	if err != nil {
+		log.Printf("Ошибка проверки регистрации: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при проверке регистрации.")
+		return
+	}
+
+	if !registered {
+		b.sendMessage(chatID, "⚠️ Вы не зарегистрированы на текущую гонку.")
+		return
+	}
+
+	// Get car assignment
+	assignment, err := b.CarRepo.GetDriverCarAssignment(activeRace.ID, driver.ID)
+	if err != nil {
+		log.Printf("Ошибка получения назначения машины: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении информации о вашей машине.")
+		return
+	}
+
+	if assignment == nil {
+		b.sendMessage(chatID, "⚠️ Машина еще не назначена для этой гонки.")
+		return
+	}
+
+	// Check if driver has confirmed their car
+	var confirmed bool
+	err = b.db.QueryRow(`
+		SELECT car_confirmed FROM race_registrations
+		WHERE race_id = $1 AND driver_id = $2
+	`, activeRace.ID, driver.ID).Scan(&confirmed)
+
+	if err != nil {
+		log.Printf("Ошибка получения статуса подтверждения: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при проверке статуса подтверждения машины.")
+		return
+	}
+
+	// Format car information
+	car := assignment.Car
+	text := fmt.Sprintf("🚗 *Ваша машина для гонки '%s'*\n\n", activeRace.Name)
+	text += fmt.Sprintf("*%s (%s)*\n", car.Name, car.Year)
+	text += fmt.Sprintf("🔢 Номер: %d\n", assignment.AssignmentNumber)
+	text += fmt.Sprintf("💰 Цена: %d CR\n", car.Price)
+	text += fmt.Sprintf("⭐ Редкость: %s\n\n", car.Rarity)
+	text += "*Характеристики:*\n"
+	text += fmt.Sprintf("🏁 Скорость: %.1f/10\n", car.Speed)
+	text += fmt.Sprintf("🔄 Управление: %.1f/10\n", car.Handling)
+	text += fmt.Sprintf("⚡ Ускорение: %.1f/10\n", car.Acceleration)
+	text += fmt.Sprintf("🚦 Старт: %.1f/10\n", car.Launch)
+	text += fmt.Sprintf("🛑 Торможение: %.1f/10\n\n", car.Braking)
+	text += fmt.Sprintf("🏆 Класс: %s %d\n", car.ClassLetter, car.ClassNumber)
+
+	if assignment.IsReroll {
+		text += "\n*Машина получена после реролла!*"
+	}
+
+	// Create keyboard for confirmation or reroll
+	var keyboard [][]tgbotapi.InlineKeyboardButton
+
+	// Only show confirmation/reroll buttons if not yet confirmed
+	if !confirmed {
+		// Check if reroll was already used
+		rerollUsed, err := b.ResultRepo.GetDriverRerollStatus(activeRace.ID, driver.ID)
+		if err != nil {
+			log.Printf("Ошибка проверки статуса реролла: %v", err)
+		}
+
+		// Add confirm button
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"✅ Подтвердить выбор машины",
+				fmt.Sprintf("confirm_car:%d", activeRace.ID),
+			),
+		))
+
+		// Add reroll button if not used yet
+		if !rerollUsed {
+			keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					"🎲 Реролл (-1 балл)",
+					fmt.Sprintf("reroll_car:%d", activeRace.ID),
+				),
+			))
+		}
+	}
+
+	// Send message with keyboard and car image if available
+	if car.ImageURL != "" {
+		b.sendPhotoWithKeyboard(
+			chatID,
+			car.ImageURL,
+			text,
+			tgbotapi.NewInlineKeyboardMarkup(keyboard...),
+		)
+	} else {
+		b.sendMessageWithKeyboard(
+			chatID,
+			text,
+			tgbotapi.NewInlineKeyboardMarkup(keyboard...),
+		)
+	}
+}
+
+// notifyDriversAboutCarAssignments sends car assignments to all drivers in a race
+func (b *Bot) notifyDriversAboutCarAssignments(raceID int) {
+	// Get race information
+	race, err := b.RaceRepo.GetByID(raceID)
+	if err != nil {
+		log.Printf("Ошибка получения информации о гонке: %v", err)
+		return
+	}
+
+	if race == nil {
+		log.Println("Гонка не найдена для отправки уведомлений")
+		return
+	}
+
+	// Get all registered drivers
+	registrations, err := b.RaceRepo.GetRegisteredDrivers(raceID)
+	if err != nil {
+		log.Printf("Ошибка получения зарегистрированных гонщиков: %v", err)
+		return
+	}
+
+	for _, reg := range registrations {
+		// Get driver's Telegram ID
+		var telegramID int64
+		err := b.db.QueryRow("SELECT telegram_id FROM drivers WHERE id = $1", reg.DriverID).Scan(&telegramID)
+		if err != nil {
+			log.Printf("Ошибка получения Telegram ID гонщика %d: %v", reg.DriverID, err)
+			continue
+		}
+
+		// Get car assignment
+		assignment, err := b.CarRepo.GetDriverCarAssignment(raceID, reg.DriverID)
+		if err != nil {
+			log.Printf("Ошибка получения назначения машины для гонщика %d: %v", reg.DriverID, err)
+			continue
+		}
+
+		if assignment == nil {
+			log.Printf("Машина не назначена для гонщика %d в гонке %d", reg.DriverID, raceID)
+			continue
+		}
+
+		// Format car information
+		car := assignment.Car
+		text := fmt.Sprintf("🏁 *Гонка началась: %s*\n\n", race.Name)
+		text += fmt.Sprintf("🚗 *Ваша машина для этой гонки:*\n\n")
+		text += fmt.Sprintf("*%s (%s)*\n", car.Name, car.Year)
+		text += fmt.Sprintf("🔢 Номер: %d\n", assignment.AssignmentNumber)
+		text += fmt.Sprintf("💰 Цена: %d CR\n", car.Price)
+		text += fmt.Sprintf("⭐ Редкость: %s\n\n", car.Rarity)
+		text += "*Характеристики:*\n"
+		text += fmt.Sprintf("🏁 Скорость: %.1f/10\n", car.Speed)
+		text += fmt.Sprintf("🔄 Управление: %.1f/10\n", car.Handling)
+		text += fmt.Sprintf("⚡ Ускорение: %.1f/10\n", car.Acceleration)
+		text += fmt.Sprintf("🚦 Старт: %.1f/10\n", car.Launch)
+		text += fmt.Sprintf("🛑 Торможение: %.1f/10\n\n", car.Braking)
+		text += fmt.Sprintf("🏆 Класс: %s %d\n\n", car.ClassLetter, car.ClassNumber)
+		text += "*У вас есть возможность сделать реролл машины (получить другую), но это будет стоить -1 балл в итоговом зачете.*"
+
+		// Create keyboard for confirmation or reroll
+		keyboard := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					"✅ Подтвердить выбор машины",
+					fmt.Sprintf("confirm_car:%d", raceID),
+				),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					"🎲 Реролл (-1 балл)",
+					fmt.Sprintf("reroll_car:%d", raceID),
+				),
+			),
+		)
+
+		// Send message with keyboard and car image if available
+		if car.ImageURL != "" {
+			b.sendPhotoWithKeyboard(telegramID, car.ImageURL, text, keyboard)
+		} else {
+			b.sendMessageWithKeyboard(telegramID, text, keyboard)
+		}
+	}
+}
+
+// notifyDriversAboutRaceCompletion sends race results to all participants
+func (b *Bot) notifyDriversAboutRaceCompletion(raceID int) {
+	// Get race information
+	race, err := b.RaceRepo.GetByID(raceID)
+	if err != nil {
+		log.Printf("Ошибка получения информации о гонке: %v", err)
+		return
+	}
+
+	if race == nil {
+		log.Println("Гонка не найдена для отправки уведомлений")
+		return
+	}
+
+	// Get race results
+	results, err := b.ResultRepo.GetRaceResultsWithRerollPenalty(raceID)
+	if err != nil {
+		log.Printf("Ошибка получения результатов гонки: %v", err)
+		return
+	}
+
+	if len(results) == 0 {
+		log.Println("Нет результатов для отправки уведомлений")
+		return
+	}
+
+	// Format results message
+	text := fmt.Sprintf("🏁 *Гонка завершена: %s*\n\n", race.Name)
+	text += "*Итоговые результаты:*\n\n"
+
+	for i, result := range results {
+		text += fmt.Sprintf("%d. *%s* (%s)\n", i+1, result.DriverName, result.CarName)
+		text += fmt.Sprintf("   🔢 Номер: %d\n", result.CarNumber)
+
+		// Add disciplinе results
+		var placesText []string
+		for _, discipline := range race.Disciplines {
+			place := result.Results[discipline]
+			emoji := getPlaceEmoji(place)
+			placesText = append(placesText, fmt.Sprintf("%s %s: %s", emoji, discipline, getPlaceText(place)))
+		}
+
+		text += fmt.Sprintf("   📊 %s\n", strings.Join(placesText, " | "))
+
+		// Add penalty if any
+		if result.RerollPenalty > 0 {
+			text += fmt.Sprintf("   ⚠️ Штраф за реролл: -%d\n", result.RerollPenalty)
+		}
+
+		text += fmt.Sprintf("   🏆 Всего очков: %d\n\n", result.TotalScore)
+	}
+
+	// Get all registered drivers
+	registrations, err := b.RaceRepo.GetRegisteredDrivers(raceID)
+	if err != nil {
+		log.Printf("Ошибка получения зарегистрированных гонщиков: %v", err)
+		return
+	}
+
+	// Send results to all participants
+	for _, reg := range registrations {
+		// Get driver's Telegram ID
+		var telegramID int64
+		err := b.db.QueryRow("SELECT telegram_id FROM drivers WHERE id = $1", reg.DriverID).Scan(&telegramID)
+		if err != nil {
+			log.Printf("Ошибка получения Telegram ID гонщика %d: %v", reg.DriverID, err)
+			continue
+		}
+
+		// Send message
+		b.sendMessage(telegramID, text)
+	}
+}
+
+// getPlaceEmoji returns emoji for a place
+func getPlaceEmoji(place int) string {
+	switch place {
+	case 1:
+		return "🥇"
+	case 2:
+		return "🥈"
+	case 3:
+		return "🥉"
+	default:
+		return "➖"
+	}
+}
+
+// getPlaceText returns text for a place
+func getPlaceText(place int) string {
+	switch place {
+	case 0:
+		return "не участвовал"
+	case 1:
+		return "1 место"
+	case 2:
+		return "2 место"
+	case 3:
+		return "3 место"
+	default:
+		return "не участвовал"
+	}
+}

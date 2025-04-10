@@ -255,3 +255,232 @@ func (r *RaceRepository) UpdateCompleted(id int, completed bool) error {
 
 	return nil
 }
+
+// UpdateState updates the state of a race
+func (r *RaceRepository) UpdateState(raceID int, state string) error {
+	_, err := r.db.Exec(
+		"UPDATE races SET state = $1 WHERE id = $2",
+		state, raceID,
+	)
+	if err != nil {
+		return fmt.Errorf("ошибка обновления состояния гонки: %v", err)
+	}
+	return nil
+}
+
+// GetRegisteredDrivers gets all drivers registered for a race
+func (r *RaceRepository) GetRegisteredDrivers(raceID int) ([]*models.RaceRegistration, error) {
+	query := `
+		SELECT rr.id, rr.race_id, rr.driver_id, rr.registered_at, rr.car_confirmed, rr.reroll_used, d.name
+		FROM race_registrations rr
+		JOIN drivers d ON rr.driver_id = d.id
+		WHERE rr.race_id = $1
+		ORDER BY rr.registered_at
+	`
+
+	rows, err := r.db.Query(query, raceID)
+	if err != nil {
+		return nil, fmt.Errorf("ошибка получения зарегистрированных гонщиков: %v", err)
+	}
+	defer rows.Close()
+
+	var registrations []*models.RaceRegistration
+
+	for rows.Next() {
+		var reg models.RaceRegistration
+		err := rows.Scan(
+			&reg.ID,
+			&reg.RaceID,
+			&reg.DriverID,
+			&reg.RegisteredAt,
+			&reg.CarConfirmed,
+			&reg.RerollUsed,
+			&reg.DriverName,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("ошибка сканирования данных регистрации: %v", err)
+		}
+		registrations = append(registrations, &reg)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("ошибка итерации по регистрациям: %v", err)
+	}
+
+	return registrations, nil
+}
+
+// RegisterDriver registers a driver for a race
+func (r *RaceRepository) RegisterDriver(raceID, driverID int) error {
+	_, err := r.db.Exec(
+		`INSERT INTO race_registrations (race_id, driver_id) 
+		 VALUES ($1, $2) 
+		 ON CONFLICT (race_id, driver_id) DO NOTHING`,
+		raceID, driverID,
+	)
+	if err != nil {
+		return fmt.Errorf("ошибка регистрации гонщика: %v", err)
+	}
+	return nil
+}
+
+// UnregisterDriver unregisters a driver from a race
+func (r *RaceRepository) UnregisterDriver(raceID, driverID int) error {
+	_, err := r.db.Exec(
+		"DELETE FROM race_registrations WHERE race_id = $1 AND driver_id = $2",
+		raceID, driverID,
+	)
+	if err != nil {
+		return fmt.Errorf("ошибка отмены регистрации гонщика: %v", err)
+	}
+	return nil
+}
+
+// CheckDriverRegistered checks if a driver is registered for a race
+func (r *RaceRepository) CheckDriverRegistered(raceID, driverID int) (bool, error) {
+	var exists bool
+	err := r.db.QueryRow(
+		"SELECT EXISTS(SELECT 1 FROM race_registrations WHERE race_id = $1 AND driver_id = $2)",
+		raceID, driverID,
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("ошибка проверки регистрации гонщика: %v", err)
+	}
+	return exists, nil
+}
+
+// UpdateCarConfirmation updates the car confirmation status
+func (r *RaceRepository) UpdateCarConfirmation(raceID, driverID int, confirmed bool) error {
+	_, err := r.db.Exec(
+		"UPDATE race_registrations SET car_confirmed = $1 WHERE race_id = $2 AND driver_id = $3",
+		confirmed, raceID, driverID,
+	)
+	if err != nil {
+		return fmt.Errorf("ошибка обновления статуса подтверждения машины: %v", err)
+	}
+	return nil
+}
+
+// UpdateRerollUsed marks that a driver has used their reroll
+func (r *RaceRepository) UpdateRerollUsed(raceID, driverID int, used bool) error {
+	_, err := r.db.Exec(
+		"UPDATE race_registrations SET reroll_used = $1 WHERE race_id = $2 AND driver_id = $3",
+		used, raceID, driverID,
+	)
+	if err != nil {
+		return fmt.Errorf("ошибка обновления статуса использования реролла: %v", err)
+	}
+	return nil
+}
+
+// GetActiveRace returns the currently active race (in progress)
+func (r *RaceRepository) GetActiveRace() (*models.Race, error) {
+	query := `
+		SELECT id, season_id, name, date, car_class, disciplines, completed, state
+		FROM races
+		WHERE state = $1
+		ORDER BY date DESC
+		LIMIT 1
+	`
+
+	var race models.Race
+	var disciplinesJSON string
+
+	err := r.db.QueryRow(query, models.RaceStateInProgress).Scan(
+		&race.ID,
+		&race.SeasonID,
+		&race.Name,
+		&race.Date,
+		&race.CarClass,
+		&disciplinesJSON,
+		&race.Completed,
+		&race.State,
+	)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil // No active race
+		}
+		return nil, fmt.Errorf("ошибка получения активной гонки: %v", err)
+	}
+
+	race.Disciplines, err = models.DeserializeDisciplines(disciplinesJSON)
+	if err != nil {
+		return nil, fmt.Errorf("ошибка десериализации дисциплин: %v", err)
+	}
+
+	return &race, nil
+}
+
+// GetUpcomingRaces returns races that haven't started yet
+func (r *RaceRepository) GetUpcomingRaces() ([]*models.Race, error) {
+	query := `
+		SELECT id, season_id, name, date, car_class, disciplines, completed, state
+		FROM races
+		WHERE state = $1
+		ORDER BY date ASC
+	`
+
+	rows, err := r.db.Query(query, models.RaceStateNotStarted)
+	if err != nil {
+		return nil, fmt.Errorf("ошибка получения предстоящих гонок: %v", err)
+	}
+	defer rows.Close()
+
+	var races []*models.Race
+
+	for rows.Next() {
+		var race models.Race
+		var disciplinesJSON string
+
+		err := rows.Scan(
+			&race.ID,
+			&race.SeasonID,
+			&race.Name,
+			&race.Date,
+			&race.CarClass,
+			&disciplinesJSON,
+			&race.Completed,
+			&race.State,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("ошибка сканирования данных гонки: %v", err)
+		}
+
+		race.Disciplines, err = models.DeserializeDisciplines(disciplinesJSON)
+		if err != nil {
+			return nil, fmt.Errorf("ошибка десериализации дисциплин: %v", err)
+		}
+
+		races = append(races, &race)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("ошибка итерации по гонкам: %v", err)
+	}
+
+	return races, nil
+}
+
+// StartRace changes race state to in_progress and assigns cars to registered drivers
+func (r *RaceRepository) StartRace(tx *sql.Tx, raceID int) error {
+	// Update race state
+	_, err := tx.Exec("UPDATE races SET state = $1 WHERE id = $2", models.RaceStateInProgress, raceID)
+	if err != nil {
+		return fmt.Errorf("ошибка обновления состояния гонки: %v", err)
+	}
+
+	return nil
+}
+
+// CompleteRace changes race state to completed
+func (r *RaceRepository) CompleteRace(tx *sql.Tx, raceID int) error {
+	// Update race state and mark as completed
+	_, err := tx.Exec("UPDATE races SET state = $1, completed = true WHERE id = $2",
+		models.RaceStateCompleted, raceID)
+	if err != nil {
+		return fmt.Errorf("ошибка завершения гонки: %v", err)
+	}
+
+	return nil
+}

@@ -2,7 +2,6 @@ package models
 
 import (
 	"database/sql"
-	"time"
 )
 
 // Car представляет автомобиль из Forza Horizon 4
@@ -39,20 +38,6 @@ var CarClasses = []CarClass{
 	{Letter: "S1", Name: "S1 класс (900-999)"},
 	{Letter: "S2", Name: "S2 класс (1000-1099)"},
 	{Letter: "X", Name: "X класс (1100+)"},
-}
-
-// RaceCarAssignment представляет назначение машины для гонщика
-type RaceCarAssignment struct {
-	ID               int       `json:"id"`
-	RaceID           int       `json:"race_id"`
-	DriverID         int       `json:"driver_id"`
-	CarID            int       `json:"car_id"`
-	AssignmentNumber int       `json:"assignment_number"`
-	CreatedAt        time.Time `json:"created_at"`
-
-	// Вложенные данные
-	Car        *Car   `json:"car,omitempty"`
-	DriverName string `json:"driver_name,omitempty"`
 }
 
 // CarAssignmentResult представляет результат случайного назначения машины

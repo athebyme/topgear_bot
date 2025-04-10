@@ -317,3 +317,136 @@ func (r *ResultRepository) GetRaceResultsWithDriverNames(raceID int) ([]*RaceRes
 
 	return results, nil
 }
+
+// CreateWithRerollPenalty creates a new race result with reroll penalty
+func (r *ResultRepository) CreateWithRerollPenalty(result *models.RaceResult) (int, error) {
+	// Serialize results to JSON
+	resultsJSON, err := models.SerializeResults(result.Results)
+	if err != nil {
+		return 0, fmt.Errorf("ошибка сериализации результатов: %v", err)
+	}
+
+	// Insert the new result with reroll penalty
+	var id int
+	err = r.db.QueryRow(
+		`INSERT INTO race_results 
+		(race_id, driver_id, car_number, car_name, car_photo_url, results, total_score, reroll_penalty) 
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING id`,
+		result.RaceID, result.DriverID, result.CarNumber, result.CarName,
+		result.CarPhotoURL, resultsJSON, result.TotalScore, result.RerollPenalty,
+	).Scan(&id)
+
+	if err != nil {
+		return 0, fmt.Errorf("ошибка создания результата: %v", err)
+	}
+
+	return id, nil
+}
+
+// GetDriverRerollStatus checks if a driver has used their reroll
+func (r *ResultRepository) GetDriverRerollStatus(raceID, driverID int) (bool, error) {
+	var rerollUsed bool
+	err := r.db.QueryRow(`
+		SELECT reroll_used FROM race_registrations
+		WHERE race_id = $1 AND driver_id = $2
+	`, raceID, driverID).Scan(&rerollUsed)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return false, nil // Not registered, so reroll not used
+		}
+		return false, fmt.Errorf("ошибка получения статуса реролла: %v", err)
+	}
+
+	return rerollUsed, nil
+}
+
+// GetRaceResultsWithRerollPenalty gets race results including reroll penalties
+func (r *ResultRepository) GetRaceResultsWithRerollPenalty(raceID int) ([]*RaceResultWithDriver, error) {
+	query := `
+		SELECT rr.id, rr.race_id, rr.driver_id, rr.car_number, rr.car_name, 
+			   rr.car_photo_url, rr.results, rr.total_score, rr.reroll_penalty, d.name 
+		FROM race_results rr
+		JOIN drivers d ON rr.driver_id = d.id
+		WHERE rr.race_id = $1
+		ORDER BY rr.total_score DESC
+	`
+
+	rows, err := r.db.Query(query, raceID)
+	if err != nil {
+		return nil, fmt.Errorf("ошибка получения результатов гонки: %v", err)
+	}
+	defer rows.Close()
+
+	var results []*RaceResultWithDriver
+
+	for rows.Next() {
+		var result RaceResultWithDriver
+		var resultsJSON string
+
+		err := rows.Scan(
+			&result.ID,
+			&result.RaceID,
+			&result.DriverID,
+			&result.CarNumber,
+			&result.CarName,
+			&result.CarPhotoURL,
+			&resultsJSON,
+			&result.TotalScore,
+			&result.RerollPenalty,
+			&result.DriverName,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("ошибка сканирования данных результата: %v", err)
+		}
+
+		// Deserialize results from JSON
+		result.Results, err = models.DeserializeResults(resultsJSON)
+		if err != nil {
+			return nil, fmt.Errorf("ошибка десериализации результатов: %v", err)
+		}
+
+		results = append(results, &result)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("ошибка итерации по результатам: %v", err)
+	}
+
+	return results, nil
+}
+
+// ApplyRerollPenaltyToResult applies a reroll penalty to a result
+func (r *ResultRepository) ApplyRerollPenaltyToResult(tx *sql.Tx, raceID, driverID int, penalty int) error {
+	// First check if the result already exists
+	var resultID int
+	var currentScore int
+
+	err := tx.QueryRow(`
+		SELECT id, total_score FROM race_results
+		WHERE race_id = $1 AND driver_id = $2
+	`, raceID, driverID).Scan(&resultID, &currentScore)
+
+	if err != nil && err != sql.ErrNoRows {
+		return fmt.Errorf("ошибка проверки существования результата: %v", err)
+	}
+
+	if err == sql.ErrNoRows {
+		// No result exists yet, nothing to update
+		return nil
+	}
+
+	// Update the existing result with the penalty
+	_, err = tx.Exec(`
+		UPDATE race_results
+		SET reroll_penalty = $1, total_score = total_score - $1
+		WHERE id = $2
+	`, penalty, resultID)
+
+	if err != nil {
+		return fmt.Errorf("ошибка применения штрафа за реролл: %v", err)
+	}
+
+	return nil
+}

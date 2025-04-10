@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
 	"time"
 
@@ -32,9 +33,9 @@ type CommandHandler func(message *tgbotapi.Message)
 // CallbackHandler обработчик callback запросов
 type CallbackHandler func(query *tgbotapi.CallbackQuery)
 
-// New создает новый экземпляр бота
+// New creates a new bot instance with all handlers registered
 func New(cfg *config.Config, db *sql.DB) (*Bot, error) {
-	// Инициализируем бота
+	// Initialize bot
 	botAPI, err := tgbotapi.NewBotAPI(cfg.Bot.Token)
 	if err != nil {
 		return nil, err
@@ -42,23 +43,23 @@ func New(cfg *config.Config, db *sql.DB) (*Bot, error) {
 
 	botAPI.Debug = cfg.Bot.Debug
 
-	// Инициализируем репозитории
+	// Initialize repositories
 	driverRepo := repository.NewDriverRepository(db)
 	seasonRepo := repository.NewSeasonRepository(db)
 	raceRepo := repository.NewRaceRepository(db)
 	resultRepo := repository.NewResultRepository(db)
 	carRepo := repository.NewCarRepository(db)
 
-	// Создаем менеджер состояний пользователей
+	// Create user state manager
 	stateManager := NewUserStateManager()
 
-	// Создаем карту ID администраторов для быстрого поиска
+	// Create admin IDs map for quick lookup
 	adminIDs := make(map[int64]bool)
 	for _, id := range cfg.Admin.Users {
 		adminIDs[id] = true
 	}
 
-	// Создаем экземпляр бота
+	// Create bot instance
 	bot := &Bot{
 		API:              botAPI,
 		Config:           cfg,
@@ -74,32 +75,92 @@ func New(cfg *config.Config, db *sql.DB) (*Bot, error) {
 		db:               db,
 	}
 
-	// Регистрируем обработчики команд
+	// Register all command and callback handlers
 	bot.registerCommandHandlers()
-
-	// Регистрируем обработчики команд для работы с машинами
 	bot.registerCarCommandHandlers()
-
-	// Регистрируем обработчики callback-запросов
 	bot.registerCallbackHandlers()
+
+	// Register new race flow handlers
+	bot.registerRaceFlowCommandHandlers()
+	bot.registerRaceFlowCallbackHandlers()
 
 	return bot, nil
 }
 
-// Start запускает бота
+// Start launches the bot
 func (b *Bot) Start() {
-	log.Printf("Бот %s успешно запущен", b.API.Self.UserName)
+	log.Printf("Bot %s successfully started", b.API.Self.UserName)
 
-	// Настраиваем получение обновлений
+	// Configure update receiver
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
 
-	// Получаем канал обновлений
+	// Get updates channel
 	updates := b.API.GetUpdatesChan(u)
 
-	// Обрабатываем обновления
+	// Process updates
 	for update := range updates {
 		go b.handleUpdate(update)
+	}
+
+	// Start a goroutine to check and notify about upcoming races
+	go b.startRaceNotifier()
+}
+
+// startRaceNotifier periodically checks for upcoming races and sends reminders
+func (b *Bot) startRaceNotifier() {
+	ticker := time.NewTicker(30 * time.Minute) // Check every 30 minutes
+	defer ticker.Stop()
+
+	for {
+		<-ticker.C
+		b.checkUpcomingRaces()
+	}
+}
+
+// checkUpcomingRaces checks for races starting soon and sends reminders
+func (b *Bot) checkUpcomingRaces() {
+	// Get upcoming races
+	upcomingRaces, err := b.RaceRepo.GetUpcomingRaces()
+	if err != nil {
+		log.Printf("Error getting upcoming races for notifications: %v", err)
+		return
+	}
+
+	now := time.Now()
+	for _, race := range upcomingRaces {
+		// Check if race starts within the next 24 hours
+		if race.Date.Sub(now) < 24*time.Hour && race.Date.After(now) {
+			// Get registered drivers
+			registrations, err := b.RaceRepo.GetRegisteredDrivers(race.ID)
+			if err != nil {
+				log.Printf("Error getting registrations for race %d: %v", race.ID, err)
+				continue
+			}
+
+			// Notify each registered driver
+			for _, reg := range registrations {
+				// Get driver's Telegram ID
+				var telegramID int64
+				err = b.db.QueryRow("SELECT telegram_id FROM drivers WHERE id = $1", reg.DriverID).Scan(&telegramID)
+				if err != nil {
+					log.Printf("Error getting Telegram ID for driver %d: %v", reg.DriverID, err)
+					continue
+				}
+
+				// Send reminder
+				hoursLeft := int(race.Date.Sub(now).Hours())
+				reminderText := ""
+
+				if hoursLeft <= 1 {
+					reminderText = fmt.Sprintf("🔔 *Напоминание:* Гонка '%s' начнется менее чем через час!", race.Name)
+				} else {
+					reminderText = fmt.Sprintf("🔔 *Напоминание:* Гонка '%s' начнется через %d часов!", race.Name, hoursLeft)
+				}
+
+				b.sendMessage(telegramID, reminderText)
+			}
+		}
 	}
 }
 

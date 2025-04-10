@@ -18,7 +18,7 @@ func main() {
 	log.Println("Starting Forza Top Gear Bot")
 
 	// Парсим аргументы командной строки
-	configPath := flag.String("config", "configs/config.yaml", "Path to config file")
+	configPath := flag.String("config", "configs/config.yml", "Path to config file")
 	flag.Parse()
 
 	// Получаем абсолютный путь к файлу конфигурации

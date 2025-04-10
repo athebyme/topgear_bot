@@ -31,10 +31,12 @@ func (r *CarRepository) GetByID(id int) (*models.Car, error) {
 
 	var car models.Car
 
+	var yearRaw sql.NullInt64
+
 	err := r.db.QueryRow(query, id).Scan(
 		&car.ID,
 		&car.Name,
-		&car.Year,
+		&yearRaw,
 		&car.ImageURL,
 		&car.Price,
 		&car.Rarity,
@@ -47,6 +49,12 @@ func (r *CarRepository) GetByID(id int) (*models.Car, error) {
 		&car.ClassNumber,
 		&car.Source,
 	)
+
+	if yearRaw.Valid {
+		car.Year = fmt.Sprintf("%d", yearRaw.Int64)
+	} else {
+		car.Year = "нет информации"
+	}
 
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -75,14 +83,16 @@ func (r *CarRepository) GetByClass(classLetter string) ([]*models.Car, error) {
 	defer rows.Close()
 
 	var cars []*models.Car
+	var yearRaw sql.NullInt64
 
 	for rows.Next() {
+		yearRaw = sql.NullInt64{}
 		var car models.Car
 
 		err := rows.Scan(
 			&car.ID,
 			&car.Name,
-			&car.Year,
+			&yearRaw,
 			&car.ImageURL,
 			&car.Price,
 			&car.Rarity,
@@ -97,6 +107,11 @@ func (r *CarRepository) GetByClass(classLetter string) ([]*models.Car, error) {
 		)
 		if err != nil {
 			return nil, fmt.Errorf("ошибка сканирования данных машины: %v", err)
+		}
+		if yearRaw.Valid {
+			car.Year = fmt.Sprintf("%d", yearRaw.Int64)
+		} else {
+			car.Year = "нет информации"
 		}
 
 		cars = append(cars, &car)
@@ -127,12 +142,13 @@ func (r *CarRepository) GetAll() ([]*models.Car, error) {
 	var cars []*models.Car
 
 	for rows.Next() {
+		var yearRaw sql.NullInt64
 		var car models.Car
 
 		err := rows.Scan(
 			&car.ID,
 			&car.Name,
-			&car.Year,
+			&yearRaw,
 			&car.ImageURL,
 			&car.Price,
 			&car.Rarity,
@@ -147,6 +163,12 @@ func (r *CarRepository) GetAll() ([]*models.Car, error) {
 		)
 		if err != nil {
 			return nil, fmt.Errorf("ошибка сканирования данных машины: %v", err)
+		}
+
+		if yearRaw.Valid {
+			car.Year = fmt.Sprintf("%d", yearRaw.Int64)
+		} else {
+			car.Year = "нет информации"
 		}
 
 		cars = append(cars, &car)
@@ -338,6 +360,7 @@ func (r *CarRepository) GetRaceCarAssignments(raceID int) ([]*models.RaceCarAssi
 	for rows.Next() {
 		var assignment models.RaceCarAssignment
 		var car models.Car
+		var yearRaw sql.NullInt64
 
 		err := rows.Scan(
 			&assignment.ID,
@@ -348,7 +371,7 @@ func (r *CarRepository) GetRaceCarAssignments(raceID int) ([]*models.RaceCarAssi
 			&assignment.CreatedAt,
 			&car.ID,
 			&car.Name,
-			&car.Year,
+			&yearRaw,
 			&car.ImageURL,
 			&car.Price,
 			&car.Rarity,
@@ -364,6 +387,12 @@ func (r *CarRepository) GetRaceCarAssignments(raceID int) ([]*models.RaceCarAssi
 		)
 		if err != nil {
 			return nil, fmt.Errorf("ошибка сканирования данных назначения: %v", err)
+		}
+
+		if yearRaw.Valid {
+			car.Year = fmt.Sprintf("%d", yearRaw.Int64)
+		} else {
+			car.Year = "нет информации"
 		}
 
 		assignment.Car = &car

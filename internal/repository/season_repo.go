@@ -28,28 +28,29 @@ func (r *SeasonRepository) Create(season *models.Season) (int, error) {
 
 	// Отключаем все активные сезоны, если новый сезон активен
 	if season.Active {
-		_, err = tx.Exec("UPDATE seasons SET active = 0 WHERE active = 1")
+		_, err = tx.Exec("UPDATE seasons SET active = false WHERE active = true")
 		if err != nil {
 			tx.Rollback()
 			return 0, fmt.Errorf("ошибка деактивации текущих сезонов: %v", err)
 		}
 	}
 
-	// Форматируем даты для SQLite
-	startDate := season.StartDate.Format("2006-01-02")
-	var endDate sql.NullString
+	// Подготавливаем данные для запроса
+	var endDate sql.NullTime
 	if !season.EndDate.IsZero() {
-		endDate = sql.NullString{
-			String: season.EndDate.Format("2006-01-02"),
-			Valid:  true,
+		endDate = sql.NullTime{
+			Time:  season.EndDate,
+			Valid: true,
 		}
 	}
 
 	// Вставляем новый сезон
-	result, err := tx.Exec(
-		"INSERT INTO seasons (name, start_date, end_date, active) VALUES (?, ?, ?, ?)",
-		season.Name, startDate, endDate, season.Active,
-	)
+	var id int
+	err = tx.QueryRow(
+		"INSERT INTO seasons (name, start_date, end_date, active) VALUES ($1, $2, $3, $4) RETURNING id",
+		season.Name, season.StartDate, endDate, season.Active,
+	).Scan(&id)
+
 	if err != nil {
 		tx.Rollback()
 		return 0, fmt.Errorf("ошибка создания сезона: %v", err)
@@ -61,13 +62,7 @@ func (r *SeasonRepository) Create(season *models.Season) (int, error) {
 		return 0, fmt.Errorf("ошибка подтверждения транзакции: %v", err)
 	}
 
-	// Получаем ID нового сезона
-	id, err := result.LastInsertId()
-	if err != nil {
-		return 0, fmt.Errorf("ошибка получения ID сезона: %v", err)
-	}
-
-	return int(id), nil
+	return id, nil
 }
 
 // GetByID получает сезон по ID
@@ -75,18 +70,17 @@ func (r *SeasonRepository) GetByID(id int) (*models.Season, error) {
 	query := `
 		SELECT id, name, start_date, end_date, active 
 		FROM seasons 
-		WHERE id = ?
+		WHERE id = $1
 	`
 
 	var season models.Season
-	var startDateStr string
-	var endDateStr sql.NullString
+	var endDate sql.NullTime
 
 	err := r.db.QueryRow(query, id).Scan(
 		&season.ID,
 		&season.Name,
-		&startDateStr,
-		&endDateStr,
+		&season.StartDate,
+		&endDate,
 		&season.Active,
 	)
 
@@ -97,17 +91,9 @@ func (r *SeasonRepository) GetByID(id int) (*models.Season, error) {
 		return nil, fmt.Errorf("ошибка получения сезона: %v", err)
 	}
 
-	// Преобразуем строки в даты
-	season.StartDate, err = time.Parse("2006-01-02", startDateStr)
-	if err != nil {
-		return nil, fmt.Errorf("ошибка разбора даты начала: %v", err)
-	}
-
-	if endDateStr.Valid {
-		season.EndDate, err = time.Parse("2006-01-02", endDateStr.String)
-		if err != nil {
-			return nil, fmt.Errorf("ошибка разбора даты окончания: %v", err)
-		}
+	// Устанавливаем конечную дату, если она не NULL
+	if endDate.Valid {
+		season.EndDate = endDate.Time
 	}
 
 	return &season, nil
@@ -131,31 +117,22 @@ func (r *SeasonRepository) GetAll() ([]*models.Season, error) {
 
 	for rows.Next() {
 		var season models.Season
-		var startDateStr string
-		var endDateStr sql.NullString
+		var endDate sql.NullTime
 
 		err := rows.Scan(
 			&season.ID,
 			&season.Name,
-			&startDateStr,
-			&endDateStr,
+			&season.StartDate,
+			&endDate,
 			&season.Active,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("ошибка сканирования данных сезона: %v", err)
 		}
 
-		// Преобразуем строки в даты
-		season.StartDate, err = time.Parse("2006-01-02", startDateStr)
-		if err != nil {
-			return nil, fmt.Errorf("ошибка разбора даты начала: %v", err)
-		}
-
-		if endDateStr.Valid {
-			season.EndDate, err = time.Parse("2006-01-02", endDateStr.String)
-			if err != nil {
-				return nil, fmt.Errorf("ошибка разбора даты окончания: %v", err)
-			}
+		// Устанавливаем конечную дату, если она не NULL
+		if endDate.Valid {
+			season.EndDate = endDate.Time
 		}
 
 		seasons = append(seasons, &season)
@@ -173,19 +150,18 @@ func (r *SeasonRepository) GetActive() (*models.Season, error) {
 	query := `
 		SELECT id, name, start_date, end_date, active 
 		FROM seasons 
-		WHERE active = 1 
+		WHERE active = true 
 		LIMIT 1
 	`
 
 	var season models.Season
-	var startDateStr string
-	var endDateStr sql.NullString
+	var endDate sql.NullTime
 
 	err := r.db.QueryRow(query).Scan(
 		&season.ID,
 		&season.Name,
-		&startDateStr,
-		&endDateStr,
+		&season.StartDate,
+		&endDate,
 		&season.Active,
 	)
 
@@ -196,17 +172,9 @@ func (r *SeasonRepository) GetActive() (*models.Season, error) {
 		return nil, fmt.Errorf("ошибка получения активного сезона: %v", err)
 	}
 
-	// Преобразуем строки в даты
-	season.StartDate, err = time.Parse("2006-01-02", startDateStr)
-	if err != nil {
-		return nil, fmt.Errorf("ошибка разбора даты начала: %v", err)
-	}
-
-	if endDateStr.Valid {
-		season.EndDate, err = time.Parse("2006-01-02", endDateStr.String)
-		if err != nil {
-			return nil, fmt.Errorf("ошибка разбора даты окончания: %v", err)
-		}
+	// Устанавливаем конечную дату, если она не NULL
+	if endDate.Valid {
+		season.EndDate = endDate.Time
 	}
 
 	return &season, nil
@@ -222,27 +190,26 @@ func (r *SeasonRepository) Update(season *models.Season) error {
 
 	// Отключаем все активные сезоны, если обновляемый сезон активен
 	if season.Active {
-		_, err = tx.Exec("UPDATE seasons SET active = 0 WHERE active = 1 AND id != ?", season.ID)
+		_, err = tx.Exec("UPDATE seasons SET active = false WHERE active = true AND id != $1", season.ID)
 		if err != nil {
 			tx.Rollback()
 			return fmt.Errorf("ошибка деактивации текущих сезонов: %v", err)
 		}
 	}
 
-	// Форматируем даты для SQLite
-	startDate := season.StartDate.Format("2006-01-02")
-	var endDate sql.NullString
+	// Подготавливаем данные для запроса
+	var endDate sql.NullTime
 	if !season.EndDate.IsZero() {
-		endDate = sql.NullString{
-			String: season.EndDate.Format("2006-01-02"),
-			Valid:  true,
+		endDate = sql.NullTime{
+			Time:  season.EndDate,
+			Valid: true,
 		}
 	}
 
 	// Обновляем сезон
 	_, err = tx.Exec(
-		"UPDATE seasons SET name = ?, start_date = ?, end_date = ?, active = ? WHERE id = ?",
-		season.Name, startDate, endDate, season.Active, season.ID,
+		"UPDATE seasons SET name = $1, start_date = $2, end_date = $3, active = $4 WHERE id = $5",
+		season.Name, season.StartDate, endDate, season.Active, season.ID,
 	)
 	if err != nil {
 		tx.Rollback()
@@ -260,11 +227,9 @@ func (r *SeasonRepository) Update(season *models.Season) error {
 
 // Complete завершает сезон с указанной датой окончания
 func (r *SeasonRepository) Complete(id int, endDate time.Time) error {
-	endDateStr := endDate.Format("2006-01-02")
-
 	_, err := r.db.Exec(
-		"UPDATE seasons SET end_date = ?, active = 0 WHERE id = ?",
-		endDateStr, id,
+		"UPDATE seasons SET end_date = $1, active = false WHERE id = $2",
+		endDate, id,
 	)
 	if err != nil {
 		return fmt.Errorf("ошибка завершения сезона: %v", err)
@@ -277,7 +242,7 @@ func (r *SeasonRepository) Complete(id int, endDate time.Time) error {
 func (r *SeasonRepository) Delete(id int) error {
 	// Проверяем, есть ли гонки в этом сезоне
 	var count int
-	err := r.db.QueryRow("SELECT COUNT(*) FROM races WHERE season_id = ?", id).Scan(&count)
+	err := r.db.QueryRow("SELECT COUNT(*) FROM races WHERE season_id = $1", id).Scan(&count)
 	if err != nil {
 		return fmt.Errorf("ошибка проверки гонок сезона: %v", err)
 	}
@@ -286,7 +251,7 @@ func (r *SeasonRepository) Delete(id int) error {
 		return fmt.Errorf("нельзя удалить сезон с гонками")
 	}
 
-	_, err = r.db.Exec("DELETE FROM seasons WHERE id = ?", id)
+	_, err = r.db.Exec("DELETE FROM seasons WHERE id = $1", id)
 	if err != nil {
 		return fmt.Errorf("ошибка удаления сезона: %v", err)
 	}
@@ -303,14 +268,14 @@ func (r *SeasonRepository) Activate(id int) error {
 	}
 
 	// Деактивируем все сезоны
-	_, err = tx.Exec("UPDATE seasons SET active = 0")
+	_, err = tx.Exec("UPDATE seasons SET active = false")
 	if err != nil {
 		tx.Rollback()
 		return fmt.Errorf("ошибка деактивации сезонов: %v", err)
 	}
 
 	// Активируем указанный сезон
-	_, err = tx.Exec("UPDATE seasons SET active = 1 WHERE id = ?", id)
+	_, err = tx.Exec("UPDATE seasons SET active = true WHERE id = $1", id)
 	if err != nil {
 		tx.Rollback()
 		return fmt.Errorf("ошибка активации сезона: %v", err)

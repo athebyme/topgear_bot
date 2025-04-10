@@ -57,7 +57,7 @@ def create_cars_table(conn):
                 acceleration FLOAT,
                 launch FLOAT,
                 braking FLOAT,
-                class_letter CHAR(1),
+                class_letter VARCHAR(50),
                 class_number INTEGER,
                 source VARCHAR(100)
             )
@@ -70,7 +70,7 @@ def create_cars_table(conn):
         raise
 
 def parse_cars():
-    """Парсит данные о машинах с веб-страницы Forza Horizon 4."""
+    """Parses car data from the Forza Horizon 4 wiki page."""
     try:
         response = requests.get(CARS_URL, timeout=30)
         response.raise_for_status()
@@ -78,67 +78,74 @@ def parse_cars():
         soup = BeautifulSoup(response.text, 'html.parser')
         cars_data = []
 
-        # Находим таблицу с машинами
-        car_table = soup.find('table', class_='article-table')
+        # Find the table with cars - updated class selector
+        car_table = soup.find('table', class_='sortable')
         if not car_table:
             logger.error("Не удалось найти таблицу с машинами")
             return []
 
-        # Получаем строки таблицы (пропускаем заголовок)
+        # Get table rows (skip header)
         rows = car_table.find_all('tr')[1:]
         logger.info(f"Найдено {len(rows)} строк с машинами")
 
         for row in rows:
             try:
-                # Получаем все ячейки строки
+                # Get all cells in the row
                 cells = row.find_all('td')
                 if len(cells) < 11:
                     continue
 
-                # Извлекаем изображение
+                # Extract image
                 img_cell = cells[0]
-                img_tag = img_cell.find('img')
-                img_url = img_tag['src'] if img_tag else None
+                a_tag = img_cell.find('a', class_='mw-file-description image')
+                img_url = a_tag['href'] if a_tag else None
 
-                # Извлекаем название и год
+                # Extract name and year
                 name_cell = cells[1]
                 name_link = name_cell.find('a')
-                full_name = name_link.text.strip() if name_link else name_cell.text.strip()
+                # Updated selector to get the car name div
+                name_div = name_cell.find('div', style=lambda s: s and "line-height: 18px" in s)
+                full_name = name_div.text.strip() if name_div else name_cell.text.strip()
 
-                # Разделяем название и год
+                # Extract year
                 year_match = re.search(r'\b(19|20)\d{2}\b', full_name)
                 year = int(year_match.group(0)) if year_match else None
                 name = full_name.replace(str(year), '').strip() if year else full_name
 
-                # Извлекаем источник (Autoshow, etc)
-                source = name_cell.find('div', style='font-size: smaller; line-height: 14px')
-                source_text = source.text.strip() if source else "Unknown"
+                # Extract source (Autoshow, etc)
+                source_div = name_cell.find('div', style=lambda s: s and "font-size: smaller" in s)
+                source_text = source_div.text.strip() if source_div else "Unknown"
 
-                # Извлекаем цену и редкость
+                # Extract price and rarity
                 price_cell = cells[5]
-                price_text = price_cell.find('div', style='line-height: 18px').text.strip() if price_cell.find('div', style='line-height: 18px') else ""
+                price_div = price_cell.find('div', style=lambda s: s and "line-height: 18px" in s)
+                price_text = price_div.text.strip() if price_div else ""
                 price = int(re.sub(r'[^\d]', '', price_text)) if re.search(r'\d', price_text) else 0
 
-                rarity_tag = price_cell.find('span', style=lambda s: s and "background-color" in s)
-                rarity = rarity_tag.text.strip() if rarity_tag else "Unknown"
+                rarity_span = price_cell.find('span', style=lambda s: s and "background-color" in s)
+                rarity = rarity_span.text.strip() if rarity_span else "Unknown"
 
-                # Извлекаем характеристики
+                # Extract performance stats
                 speed = float(cells[6].text.strip()) if cells[6].text.strip() else 0
                 handling = float(cells[7].text.strip()) if cells[7].text.strip() else 0
                 acceleration = float(cells[8].text.strip()) if cells[8].text.strip() else 0
                 launch = float(cells[9].text.strip()) if cells[9].text.strip() else 0
                 braking = float(cells[10].text.strip()) if cells[10].text.strip() else 0
 
-                # Извлекаем класс
+                # Extract class
                 class_cell = cells[11] if len(cells) > 11 else None
                 class_letter = None
                 class_number = None
 
                 if class_cell:
-                    class_spans = class_cell.find_all('span')
-                    if len(class_spans) >= 2:
-                        class_letter = class_spans[0].text.strip()
-                        class_number_text = class_spans[1].text.strip()
+                    # Find the class letter and number from the spans
+                    letter_span = class_cell.find('span', style=lambda s: s and "background-color" in s)
+                    number_span = class_cell.find('span', style=lambda s: s and "border:" in s)
+
+                    if letter_span:
+                        class_letter = letter_span.text.strip()
+                    if number_span:
+                        class_number_text = number_span.text.strip()
                         class_number = int(re.sub(r'[^\d]', '', class_number_text)) if re.search(r'\d', class_number_text) else 0
 
                 car_data = {
@@ -183,7 +190,7 @@ def save_cars_to_db(conn, cars_data):
     try:
         with conn.cursor() as cursor:
             # Очищаем таблицу перед вставкой новых данных
-            cursor.execute("TRUNCATE cars RESTART IDENTITY")
+            cursor.execute("TRUNCATE TABLE cars RESTART IDENTITY CASCADE")
 
             # Подготавливаем данные для вставки
             columns = cars_data[0].keys()

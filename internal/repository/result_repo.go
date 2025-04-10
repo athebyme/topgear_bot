@@ -29,7 +29,7 @@ func (r *ResultRepository) Create(result *models.RaceResult) (int, error) {
 	newResult, err := r.db.Exec(
 		`INSERT INTO race_results 
 		(race_id, driver_id, car_number, car_name, car_photo_url, results, total_score) 
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 		result.RaceID, result.DriverID, result.CarNumber, result.CarName,
 		result.CarPhotoURL, resultsJSON, result.TotalScore,
 	)
@@ -51,7 +51,7 @@ func (r *ResultRepository) GetByID(id int) (*models.RaceResult, error) {
 	query := `
 		SELECT id, race_id, driver_id, car_number, car_name, car_photo_url, results, total_score 
 		FROM race_results 
-		WHERE id = ?
+		WHERE id = $1
 	`
 
 	var result models.RaceResult
@@ -89,7 +89,7 @@ func (r *ResultRepository) GetByRaceID(raceID int) ([]*models.RaceResult, error)
 	query := `
 		SELECT id, race_id, driver_id, car_number, car_name, car_photo_url, results, total_score 
 		FROM race_results 
-		WHERE race_id = ? 
+		WHERE race_id = $1 
 		ORDER BY total_score DESC
 	`
 
@@ -140,11 +140,11 @@ func (r *ResultRepository) GetByDriverID(driverID int) ([]*models.RaceResult, er
 	query := `
 		SELECT id, race_id, driver_id, car_number, car_name, car_photo_url, results, total_score 
 		FROM race_results 
-		WHERE driver_id = ? 
+		WHERE driver_id = $1
 		ORDER BY id DESC
 	`
 
-	rows, err := r.db.Query(query, driverID)
+	rows, err := r.db.Query(query, &driverID)
 	if err != nil {
 		return nil, fmt.Errorf("ошибка получения результатов гонщика: %v", err)
 	}
@@ -197,11 +197,11 @@ func (r *ResultRepository) Update(result *models.RaceResult) error {
 	// Обновляем результат
 	_, err = r.db.Exec(
 		`UPDATE race_results 
-		SET race_id = ?, driver_id = ?, car_number = ?, car_name = ?, 
-			car_photo_url = ?, results = ?, total_score = ? 
-		WHERE id = ?`,
-		result.RaceID, result.DriverID, result.CarNumber, result.CarName,
-		result.CarPhotoURL, resultsJSON, result.TotalScore, result.ID,
+		SET race_id = $1, driver_id = $2, car_number = $3, car_name = $4, 
+			car_photo_url = $5, results = $6, total_score = $7 
+		WHERE id = $7`,
+		&result.RaceID, &result.DriverID, &result.CarNumber, &result.CarName,
+		&result.CarPhotoURL, &resultsJSON, &result.TotalScore, &result.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("ошибка обновления результата: %v", err)
@@ -212,7 +212,7 @@ func (r *ResultRepository) Update(result *models.RaceResult) error {
 
 // Delete удаляет результат
 func (r *ResultRepository) Delete(id int) error {
-	_, err := r.db.Exec("DELETE FROM race_results WHERE id = ?", id)
+	_, err := r.db.Exec("DELETE FROM race_results WHERE id = $1", id)
 	if err != nil {
 		return fmt.Errorf("ошибка удаления результата: %v", err)
 	}
@@ -222,7 +222,7 @@ func (r *ResultRepository) Delete(id int) error {
 
 // DeleteByRaceID удаляет все результаты указанной гонки
 func (r *ResultRepository) DeleteByRaceID(raceID int) error {
-	_, err := r.db.Exec("DELETE FROM race_results WHERE race_id = ?", raceID)
+	_, err := r.db.Exec("DELETE FROM race_results WHERE race_id = $1", raceID)
 	if err != nil {
 		return fmt.Errorf("ошибка удаления результатов гонки: %v", err)
 	}
@@ -236,9 +236,9 @@ func (r *ResultRepository) CheckDriverResultExists(raceID, driverID int) (bool, 
 	err := r.db.QueryRow(`
 		SELECT EXISTS(
 			SELECT 1 FROM race_results 
-			WHERE race_id = ? AND driver_id = ?
+			WHERE race_id = $1 AND driver_id = $2
 		)
-	`, raceID, driverID).Scan(&exists)
+	`, &raceID, &driverID).Scan(&exists)
 
 	if err != nil {
 		return false, fmt.Errorf("ошибка проверки результата гонщика: %v", err)
@@ -250,7 +250,7 @@ func (r *ResultRepository) CheckDriverResultExists(raceID, driverID int) (bool, 
 // GetResultCountByRaceID получает количество результатов для указанной гонки
 func (r *ResultRepository) GetResultCountByRaceID(raceID int) (int, error) {
 	var count int
-	err := r.db.QueryRow("SELECT COUNT(*) FROM race_results WHERE race_id = ?", raceID).Scan(&count)
+	err := r.db.QueryRow("SELECT COUNT(*) FROM race_results WHERE race_id = $1", raceID).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("ошибка подсчета результатов гонки: %v", err)
 	}
@@ -271,7 +271,7 @@ func (r *ResultRepository) GetRaceResultsWithDriverNames(raceID int) ([]*RaceRes
 			   rr.car_photo_url, rr.results, rr.total_score, d.name 
 		FROM race_results rr
 		JOIN drivers d ON rr.driver_id = d.id
-		WHERE rr.race_id = ?
+		WHERE rr.race_id = $1
 		ORDER BY rr.total_score DESC
 	`
 

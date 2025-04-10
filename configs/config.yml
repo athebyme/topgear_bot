@@ -13,7 +13,7 @@ database:
 admin:
   # ID пользователей Telegram, которые будут администраторами
   # Добавь свой ID после получения через @userinfobot
-  users: []
+  users: [447590340]
 
 # Флаг для определения, работаем ли мы в Docker
 is_dockerized: false

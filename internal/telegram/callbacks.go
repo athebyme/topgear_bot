@@ -34,6 +34,7 @@ func (b *Bot) registerCallbackHandlers() {
 		"edit_race":           b.callbackEditRace,
 		"delete_race":         b.callbackDeleteRace,
 		"confirm_delete_race": b.callbackConfirmDeleteRace,
+		"place":               b.callbackPlace, // ADD THIS
 		"cancel_delete_race":  b.callbackCancelDeleteRace,
 		"season_results":      b.callbackSeasonResults,
 		"back_to_main":        b.callbackBackToMain,
@@ -848,10 +849,16 @@ func (b *Bot) callbackConfirmDeleteRace(query *tgbotapi.CallbackQuery) {
 	// Запоминаем ID сезона для возврата к списку гонок сезона
 	seasonID := race.SeasonID
 
+	tx, err := b.db.Begin()
+	if err != nil {
+		return
+	}
+
 	// Удаляем гонку
-	err = b.RaceRepo.Delete(raceID)
+	err = b.RaceRepo.DeleteWithTx(tx, raceID)
 	if err != nil {
 		log.Printf("Ошибка удаления гонки: %v", err)
+		tx.Rollback()
 		b.sendMessage(chatID, "⚠️ Произошла ошибка при удалении гонки.")
 		return
 	}
@@ -979,4 +986,110 @@ func (b *Bot) callbackCancel(query *tgbotapi.CallbackQuery) {
 
 	// Удаляем сообщение с кнопкой
 	b.deleteMessage(chatID, query.Message.MessageID)
+}
+
+// Add the new handler implementation
+func (b *Bot) callbackPlace(query *tgbotapi.CallbackQuery) {
+	userID := query.From.ID
+	chatID := query.Message.Chat.ID
+	messageID := query.Message.MessageID
+
+	// Отправляем уведомление о получении запроса
+	b.answerCallbackQuery(query.ID, "", false)
+
+	// Разбираем данные запроса: place:DisciplineName:PlaceValue
+	parts := strings.Split(query.Data, ":")
+	if len(parts) < 3 {
+		b.sendMessage(chatID, "⚠️ Неверный формат данных callback (place).")
+		return
+	}
+
+	// disciplineName := parts[1] // We actually get the discipline from state
+	place, err := strconv.Atoi(parts[2])
+	if err != nil || place < 0 || place > 3 {
+		b.sendMessage(chatID, "⚠️ Неверное значение места (place).")
+		return
+	}
+
+	// Получаем текущее состояние
+	state, exists := b.StateManager.GetState(userID)
+	if !exists || state.State != "add_result_discipline" {
+		b.sendMessage(chatID, "⚠️ Неверное состояние для выбора места. Используйте /cancel или начните заново.")
+		// Optionally delete the message with the keyboard
+		b.deleteMessage(chatID, messageID)
+		return
+	}
+
+	// --- Logic copied and adapted from handleResultDiscipline ---
+	disciplines := state.ContextData["disciplines"].([]string)
+	currentIdx := state.ContextData["current_idx"].(int)
+	results := state.ContextData["results"].(map[string]int)
+
+	// Сохраняем результат текущей дисциплины
+	currentDiscipline := disciplines[currentIdx]
+	results[currentDiscipline] = place
+
+	// Переходим к следующей дисциплине или завершаем
+	currentIdx++
+
+	if currentIdx < len(disciplines) {
+		// Еще есть дисциплины
+		b.StateManager.SetState(userID, "add_result_discipline", map[string]interface{}{
+			"race_id":     state.ContextData["race_id"],
+			"car_number":  state.ContextData["car_number"],
+			"car_name":    state.ContextData["car_name"],
+			"car_photo":   state.ContextData["car_photo"],
+			"disciplines": disciplines,
+			"current_idx": currentIdx,
+			"results":     results,
+		})
+
+		// Запрашиваем результат следующей дисциплины by editing the message
+		nextDisciplineName := disciplines[currentIdx]
+		keyboard := PlacesKeyboard(nextDisciplineName)
+		b.editMessageWithKeyboard( // EDIT instead of send
+			chatID,
+			messageID, // Edit the existing message
+			fmt.Sprintf("Выберите ваше место в дисциплине '%s':", nextDisciplineName),
+			keyboard,
+		)
+	} else {
+		// Все дисциплины заполнены, сохраняем результат
+		driver, err := b.DriverRepo.GetByTelegramID(userID)
+		// ... (handle driver error) ...
+		if driver == nil {
+			// ... (handle driver not found) ...
+			b.StateManager.ClearState(userID)
+			// Delete the keyboard message since we are done
+			b.deleteMessage(chatID, messageID)
+			return
+		}
+
+		totalScore := 0
+		// ... (calculate total score) ...
+
+		result := &models.RaceResult{
+			// ... (populate result) ...
+		}
+
+		_, err = b.ResultRepo.Create(result)
+		if err != nil {
+			// ... (handle save error) ...
+			// Optionally edit the message to show error
+			b.editMessage(chatID, messageID, "⚠️ Произошла ошибка при сохранении результатов.")
+			return
+		}
+
+		// Очищаем состояние
+		b.StateManager.ClearState(userID)
+
+		// Edit the message to show success
+		b.editMessage(
+			chatID,
+			messageID,
+			fmt.Sprintf("✅ Результаты успешно сохранены! Вы набрали %d очков в этой гонке.", totalScore),
+		)
+		// Optionally show full results after a delay or provide a button
+		// b.showRaceResults(chatID, result.RaceID) // This would send a new message
+	}
 }

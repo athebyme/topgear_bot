@@ -2,69 +2,63 @@ package repository
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
-	"time"
-
 	"github.com/athebyme/forza-top-gear-bot/internal/models"
 )
 
-// RaceRepository представляет репозиторий для работы с гонками
 type RaceRepository struct {
 	db *sql.DB
 }
 
-// NewRaceRepository создает новый репозиторий гонок
 func NewRaceRepository(db *sql.DB) *RaceRepository {
 	return &RaceRepository{db: db}
 }
 
-// Create создает новую гонку
 func (r *RaceRepository) Create(race *models.Race) (int, error) {
-	// Сериализуем дисциплины в JSON
 	disciplinesJSON, err := models.SerializeDisciplines(race.Disciplines)
 	if err != nil {
 		return 0, fmt.Errorf("ошибка сериализации дисциплин: %v", err)
 	}
 
-	// Форматируем дату для SQLite
 	dateStr := race.Date.Format("2006-01-02")
 
-	// Вставляем новую гонку
-	result, err := r.db.Exec(
-		"INSERT INTO races (season_id, name, date, car_class, disciplines, completed) VALUES (?, ?, ?, ?, ?, ?)",
-		race.SeasonID, race.Name, dateStr, race.CarClass, disciplinesJSON, race.Completed,
-	)
+	var id int
+	err = r.db.QueryRow(
+		`INSERT INTO races 
+        (season_id, name, date, car_class, disciplines, completed) 
+        VALUES ($1, $2, $3, $4, $5, $6) 
+        RETURNING id`,
+		race.SeasonID,
+		race.Name,
+		dateStr,
+		race.CarClass,
+		disciplinesJSON,
+		race.Completed,
+	).Scan(&id)
+
 	if err != nil {
 		return 0, fmt.Errorf("ошибка создания гонки: %v", err)
 	}
 
-	// Получаем ID новой гонки
-	id, err := result.LastInsertId()
-	if err != nil {
-		return 0, fmt.Errorf("ошибка получения ID гонки: %v", err)
-	}
-
-	return int(id), nil
+	return id, nil
 }
 
-// GetByID получает гонку по ID
 func (r *RaceRepository) GetByID(id int) (*models.Race, error) {
 	query := `
-		SELECT id, season_id, name, date, car_class, disciplines, completed 
-		FROM races 
-		WHERE id = ?
+		SELECT id, season_id, name, date, car_class, disciplines, completed
+		FROM races
+		WHERE id = $1
 	`
 
 	var race models.Race
-	var dateStr string
+	// var dateStr string // REMOVE
 	var disciplinesJSON string
 
 	err := r.db.QueryRow(query, id).Scan(
 		&race.ID,
 		&race.SeasonID,
 		&race.Name,
-		&dateStr,
+		&race.Date, // SCAN DIRECTLY INTO race.Date
 		&race.CarClass,
 		&disciplinesJSON,
 		&race.Completed,
@@ -72,38 +66,36 @@ func (r *RaceRepository) GetByID(id int) (*models.Race, error) {
 
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, nil // Гонка не найдена
+			return nil, nil // Return nil, nil for not found
 		}
 		return nil, fmt.Errorf("ошибка получения гонки: %v", err)
 	}
 
-	// Преобразуем строку в дату
-	race.Date, err = time.Parse("2006-01-02", dateStr)
-	if err != nil {
-		return nil, fmt.Errorf("ошибка разбора даты: %v", err)
-	}
+	// race.Date, err = time.Parse("2006-01-02", dateStr) // REMOVE
+	// if err != nil {
+	// 	return nil, fmt.Errorf("ошибка разбора даты: %v", err)
+	// }
 
-	// Десериализуем дисциплины из JSON
 	race.Disciplines, err = models.DeserializeDisciplines(disciplinesJSON)
 	if err != nil {
-		return nil, fmt.Errorf("ошибка десериализации дисциплин: %v", err)
+		// Wrap error for context
+		return nil, fmt.Errorf("ошибка десериализации дисциплин для гонки ID %d: %v", id, err)
 	}
 
 	return &race, nil
 }
 
-// GetBySeason получает все гонки указанного сезона
 func (r *RaceRepository) GetBySeason(seasonID int) ([]*models.Race, error) {
 	query := `
-		SELECT id, season_id, name, date, car_class, disciplines, completed 
-		FROM races 
-		WHERE season_id = ? 
+		SELECT id, season_id, name, date, car_class, disciplines, completed
+		FROM races
+		WHERE season_id = $1
 		ORDER BY date DESC
 	`
 
 	rows, err := r.db.Query(query, seasonID)
 	if err != nil {
-		return nil, fmt.Errorf("ошибка получения гонок сезона: %v", err)
+		return nil, fmt.Errorf("ошибка получения гонок сезона %d: %v", seasonID, err)
 	}
 	defer rows.Close()
 
@@ -111,50 +103,49 @@ func (r *RaceRepository) GetBySeason(seasonID int) ([]*models.Race, error) {
 
 	for rows.Next() {
 		var race models.Race
-		var dateStr string
+		// var dateStr string // REMOVE
 		var disciplinesJSON string
 
 		err := rows.Scan(
 			&race.ID,
 			&race.SeasonID,
 			&race.Name,
-			&dateStr,
+			&race.Date, // SCAN DIRECTLY INTO race.Date
 			&race.CarClass,
 			&disciplinesJSON,
 			&race.Completed,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("ошибка сканирования данных гонки: %v", err)
+			return nil, fmt.Errorf("ошибка сканирования данных гонки в сезоне %d: %v", seasonID, err)
 		}
 
-		// Преобразуем строку в дату
-		race.Date, err = time.Parse("2006-01-02", dateStr)
-		if err != nil {
-			return nil, fmt.Errorf("ошибка разбора даты: %v", err)
-		}
+		// race.Date, err = time.Parse("2006-01-02", dateStr) // REMOVE
+		// if err != nil {
+		// 	return nil, fmt.Errorf("ошибка разбора даты для гонки ID %d: %v", race.ID, err)
+		// }
 
-		// Десериализуем дисциплины из JSON
 		race.Disciplines, err = models.DeserializeDisciplines(disciplinesJSON)
 		if err != nil {
-			return nil, fmt.Errorf("ошибка десериализации дисциплин: %v", err)
+			// Wrap error for context
+			return nil, fmt.Errorf("ошибка десериализации дисциплин для гонки ID %d: %v", race.ID, err)
 		}
 
 		races = append(races, &race)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("ошибка итерации по гонкам: %v", err)
+		return nil, fmt.Errorf("ошибка итерации по гонкам сезона %d: %v", seasonID, err)
 	}
 
 	return races, nil
 }
 
-// GetIncompleteRaces получает все незавершенные гонки
 func (r *RaceRepository) GetIncompleteRaces() ([]*models.Race, error) {
+	// WHERE completed = false is correct for boolean
 	query := `
-		SELECT id, season_id, name, date, car_class, disciplines, completed 
-		FROM races 
-		WHERE completed = 0 
+		SELECT id, season_id, name, date, car_class, disciplines, completed
+		FROM races
+		WHERE completed = false
 		ORDER BY date DESC
 	`
 
@@ -168,82 +159,94 @@ func (r *RaceRepository) GetIncompleteRaces() ([]*models.Race, error) {
 
 	for rows.Next() {
 		var race models.Race
-		var dateStr string
+		// var dateStr string // REMOVE
 		var disciplinesJSON string
 
 		err := rows.Scan(
 			&race.ID,
 			&race.SeasonID,
 			&race.Name,
-			&dateStr,
+			&race.Date, // SCAN DIRECTLY INTO race.Date
 			&race.CarClass,
 			&disciplinesJSON,
 			&race.Completed,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("ошибка сканирования данных гонки: %v", err)
+			return nil, fmt.Errorf("ошибка сканирования данных незавершенной гонки: %v", err)
 		}
 
-		// Преобразуем строку в дату
-		race.Date, err = time.Parse("2006-01-02", dateStr)
-		if err != nil {
-			return nil, fmt.Errorf("ошибка разбора даты: %v", err)
-		}
+		// race.Date, err = time.Parse("2006-01-02", dateStr) // REMOVE
+		// if err != nil {
+		// 	return nil, fmt.Errorf("ошибка разбора даты для гонки ID %d: %v", race.ID, err)
+		// }
 
-		// Десериализуем дисциплины из JSON
 		race.Disciplines, err = models.DeserializeDisciplines(disciplinesJSON)
 		if err != nil {
-			return nil, fmt.Errorf("ошибка десериализации дисциплин: %v", err)
+			// Wrap error for context
+			return nil, fmt.Errorf("ошибка десериализации дисциплин для гонки ID %d: %v", race.ID, err)
 		}
 
 		races = append(races, &race)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("ошибка итерации по гонкам: %v", err)
+		return nil, fmt.Errorf("ошибка итерации по незавершенным гонкам: %v", err)
 	}
 
 	return races, nil
 }
 
-// Update обновляет гонку
+// Suggestion: Make Update consistent with Create regarding discipline serialization
 func (r *RaceRepository) Update(tx *sql.Tx, race *models.Race) error {
-	// Сериализуем дисциплины в JSON
-	disciplinesJSON, err := json.Marshal(race.Disciplines)
+	// Use the same serialization function as in Create for consistency
+	disciplinesJSON, err := models.SerializeDisciplines(race.Disciplines)
 	if err != nil {
 		return fmt.Errorf("ошибка сериализации дисциплин: %v", err)
 	}
 
-	// Проверяем, используем ли мы транзакцию
+	// Date needs to be passed as time.Time, the driver handles formatting
+	updateQuery := `
+		UPDATE races
+		SET season_id = $1, name = $2, date = $3, car_class = $4, disciplines = $5, completed = $6
+		WHERE id = $7
+	`
+	// Pass race.Date directly, the driver should handle it.
+	// If your DB column is DATE, the time part will be truncated by the DB.
+	// If your DB column is TIMESTAMP/TIMESTAMPTZ, the full time will be stored.
+	args := []interface{}{
+		race.SeasonID, race.Name, race.Date, race.CarClass, disciplinesJSON, race.Completed, race.ID,
+	}
+
 	if tx != nil {
-		// Обновляем гонку в рамках транзакции
-		_, err = tx.Exec(
-			`UPDATE races 
-			 SET season_id = $1, name = $2, date = $3, car_class = $4, disciplines = $5, completed = $6 
-			 WHERE id = $7`,
-			race.SeasonID, race.Name, race.Date, race.CarClass, disciplinesJSON, race.Completed, race.ID,
-		)
+		_, err = tx.Exec(updateQuery, args...)
 	} else {
-		// Обновляем гонку без транзакции
-		_, err = r.db.Exec(
-			`UPDATE races 
-			 SET season_id = $1, name = $2, date = $3, car_class = $4, disciplines = $5, completed = $6 
-			 WHERE id = $7`,
-			race.SeasonID, race.Name, race.Date, race.CarClass, disciplinesJSON, race.Completed, race.ID,
-		)
+		_, err = r.db.Exec(updateQuery, args...)
 	}
 
 	if err != nil {
-		return fmt.Errorf("ошибка обновления гонки: %v", err)
+		return fmt.Errorf("ошибка обновления гонки ID %d: %v", race.ID, err)
 	}
 
 	return nil
 }
 
-// UpdateCompleted изменяет статус завершенности гонки
+// Add GetResultCountByRaceID if it's missing (used in callbackCompleteRace and callbackDeleteRace)
+// NOTE: This should ideally be in ResultRepository, but adding here for completeness based on usage.
+// Move it to ResultRepository if possible.
+func (r *RaceRepository) GetResultCountByRaceID(raceID int) (int, error) {
+	var count int
+	query := "SELECT COUNT(*) FROM results WHERE race_id = $1"
+	err := r.db.QueryRow(query, raceID).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("ошибка получения количества результатов для гонки ID %d: %v", raceID, err)
+	}
+	return count, nil
+}
+
 func (r *RaceRepository) UpdateCompleted(id int, completed bool) error {
+	// Исправлено для использования boolean значения
 	_, err := r.db.Exec(
-		"UPDATE races SET completed = ? WHERE id = ?",
+		"UPDATE races SET completed = $1 WHERE id = $2",
 		completed, id,
 	)
 	if err != nil {
@@ -251,149 +254,4 @@ func (r *RaceRepository) UpdateCompleted(id int, completed bool) error {
 	}
 
 	return nil
-}
-
-// Delete удаляет гонку
-func (r *RaceRepository) Delete(id int) error {
-	// Начинаем транзакцию
-	tx, err := r.db.Begin()
-	if err != nil {
-		return fmt.Errorf("ошибка начала транзакции: %v", err)
-	}
-
-	// Удаляем связанные результаты
-	_, err = tx.Exec("DELETE FROM race_results WHERE race_id = ?", id)
-	if err != nil {
-		tx.Rollback()
-		return fmt.Errorf("ошибка удаления результатов гонки: %v", err)
-	}
-
-	// Удаляем гонку
-	_, err = tx.Exec("DELETE FROM races WHERE id = ?", id)
-	if err != nil {
-		tx.Rollback()
-		return fmt.Errorf("ошибка удаления гонки: %v", err)
-	}
-
-	// Подтверждаем транзакцию
-	err = tx.Commit()
-	if err != nil {
-		return fmt.Errorf("ошибка подтверждения транзакции: %v", err)
-	}
-
-	return nil
-}
-
-// GetAll возвращает все гонки
-func (r *RaceRepository) GetAll() ([]*models.Race, error) {
-	query := `
-		SELECT id, season_id, name, date, car_class, disciplines, completed 
-		FROM races 
-		ORDER BY date DESC
-	`
-
-	rows, err := r.db.Query(query)
-	if err != nil {
-		return nil, fmt.Errorf("ошибка получения всех гонок: %v", err)
-	}
-	defer rows.Close()
-
-	var races []*models.Race
-
-	for rows.Next() {
-		var race models.Race
-		var dateStr string
-		var disciplinesJSON string
-
-		err := rows.Scan(
-			&race.ID,
-			&race.SeasonID,
-			&race.Name,
-			&dateStr,
-			&race.CarClass,
-			&disciplinesJSON,
-			&race.Completed,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("ошибка сканирования данных гонки: %v", err)
-		}
-
-		// Преобразуем строку в дату
-		race.Date, err = time.Parse("2006-01-02", dateStr)
-		if err != nil {
-			return nil, fmt.Errorf("ошибка разбора даты: %v", err)
-		}
-
-		// Десериализуем дисциплины из JSON
-		race.Disciplines, err = models.DeserializeDisciplines(disciplinesJSON)
-		if err != nil {
-			return nil, fmt.Errorf("ошибка десериализации дисциплин: %v", err)
-		}
-
-		races = append(races, &race)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("ошибка итерации по гонкам: %v", err)
-	}
-
-	return races, nil
-}
-
-// GetActiveSeasonRaces получает все гонки активного сезона
-func (r *RaceRepository) GetActiveSeasonRaces() ([]*models.Race, error) {
-	query := `
-		SELECT r.id, r.season_id, r.name, r.date, r.car_class, r.disciplines, r.completed 
-		FROM races r
-		JOIN seasons s ON r.season_id = s.id
-		WHERE s.active = 1
-		ORDER BY r.date DESC
-	`
-
-	rows, err := r.db.Query(query)
-	if err != nil {
-		return nil, fmt.Errorf("ошибка получения гонок активного сезона: %v", err)
-	}
-	defer rows.Close()
-
-	var races []*models.Race
-
-	for rows.Next() {
-		var race models.Race
-		var dateStr string
-		var disciplinesJSON string
-
-		err := rows.Scan(
-			&race.ID,
-			&race.SeasonID,
-			&race.Name,
-			&dateStr,
-			&race.CarClass,
-			&disciplinesJSON,
-			&race.Completed,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("ошибка сканирования данных гонки: %v", err)
-		}
-
-		// Преобразуем строку в дату
-		race.Date, err = time.Parse("2006-01-02", dateStr)
-		if err != nil {
-			return nil, fmt.Errorf("ошибка разбора даты: %v", err)
-		}
-
-		// Десериализуем дисциплины из JSON
-		race.Disciplines, err = models.DeserializeDisciplines(disciplinesJSON)
-		if err != nil {
-			return nil, fmt.Errorf("ошибка десериализации дисциплин: %v", err)
-		}
-
-		races = append(races, &race)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("ошибка итерации по гонкам: %v", err)
-	}
-
-	return races, nil
 }

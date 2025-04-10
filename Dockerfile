@@ -2,32 +2,27 @@ FROM golang:1.23-alpine AS builder
 
 WORKDIR /app
 
-# Копируем go.mod и go.sum
+# Copy go.mod and go.sum
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Копируем исходный код
+# Copy source code
 COPY . .
 
-# Компилируем приложение
-RUN CGO_ENABLED=0 GOOS=linux go build -o forza-bot ./cmd/bot/main.go
+# Build the application as a fully static binary
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -tags netgo -ldflags '-w -extldflags "-static"' -o forza-bot ./cmd/bot/main.go
 
-# Финальный образ
-FROM alpine:3.18
+# Use a minimal base image
+FROM gcr.io/distroless/static:nonroot
 
 WORKDIR /app
 
-# Устанавливаем зависимости с переключением на CDN зеркала в случае ошибок
-RUN apk update && \
-    apk --no-cache add ca-certificates tzdata
-
-# Копируем скомпилированное приложение
+# Copy compiled application
 COPY --from=builder /app/forza-bot /app/
 COPY --from=builder /app/configs /app/configs
 
-# Добавляем пользователя для запуска приложения
-RUN adduser -D -g '' appuser
-USER appuser
+# Run as non-root user
+USER nonroot:nonroot
 
-# Запускаем приложение
+# Run the application
 CMD ["/app/forza-bot"]

@@ -21,20 +21,17 @@ func NewDriverRepository(db *sql.DB) *DriverRepository {
 func (r *DriverRepository) Create(driver *models.Driver) (int, error) {
 	query := `
 		INSERT INTO drivers (telegram_id, name, description, photo_url) 
-		VALUES (?, ?, ?, ?)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id
 	`
 
-	result, err := r.db.Exec(query, driver.TelegramID, driver.Name, driver.Description, driver.PhotoURL)
+	var id int
+	err := r.db.QueryRow(query, driver.TelegramID, driver.Name, driver.Description, driver.PhotoURL).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("ошибка создания гонщика: %v", err)
 	}
 
-	id, err := result.LastInsertId()
-	if err != nil {
-		return 0, fmt.Errorf("ошибка получения ID гонщика: %v", err)
-	}
-
-	return int(id), nil
+	return id, nil
 }
 
 // GetByID получает гонщика по ID
@@ -42,7 +39,7 @@ func (r *DriverRepository) GetByID(id int) (*models.Driver, error) {
 	query := `
 		SELECT id, telegram_id, name, description, photo_url 
 		FROM drivers 
-		WHERE id = ?
+		WHERE id = $1
 	`
 
 	var driver models.Driver
@@ -69,7 +66,7 @@ func (r *DriverRepository) GetByTelegramID(telegramID int64) (*models.Driver, er
 	query := `
 		SELECT id, telegram_id, name, description, photo_url 
 		FROM drivers 
-		WHERE telegram_id = ?
+		WHERE telegram_id = $1
 	`
 
 	var driver models.Driver
@@ -95,8 +92,8 @@ func (r *DriverRepository) GetByTelegramID(telegramID int64) (*models.Driver, er
 func (r *DriverRepository) Update(driver *models.Driver) error {
 	query := `
 		UPDATE drivers 
-		SET name = ?, description = ?, photo_url = ? 
-		WHERE id = ?
+		SET name = $1, description = $2, photo_url = $3 
+		WHERE id = $4
 	`
 
 	_, err := r.db.Exec(query, driver.Name, driver.Description, driver.PhotoURL, driver.ID)
@@ -109,7 +106,7 @@ func (r *DriverRepository) Update(driver *models.Driver) error {
 
 // UpdateName обновляет имя гонщика
 func (r *DriverRepository) UpdateName(id int, name string) error {
-	query := `UPDATE drivers SET name = ? WHERE id = ?`
+	query := `UPDATE drivers SET name = $1 WHERE id = $2`
 
 	_, err := r.db.Exec(query, name, id)
 	if err != nil {
@@ -121,7 +118,7 @@ func (r *DriverRepository) UpdateName(id int, name string) error {
 
 // UpdateDescription обновляет описание гонщика
 func (r *DriverRepository) UpdateDescription(id int, description string) error {
-	query := `UPDATE drivers SET description = ? WHERE id = ?`
+	query := `UPDATE drivers SET description = $1 WHERE id = $2`
 
 	_, err := r.db.Exec(query, description, id)
 	if err != nil {
@@ -133,7 +130,7 @@ func (r *DriverRepository) UpdateDescription(id int, description string) error {
 
 // UpdatePhoto обновляет фото гонщика
 func (r *DriverRepository) UpdatePhoto(id int, photoURL string) error {
-	query := `UPDATE drivers SET photo_url = ? WHERE id = ?`
+	query := `UPDATE drivers SET photo_url = $1 WHERE id = $2`
 
 	_, err := r.db.Exec(query, photoURL, id)
 	if err != nil {
@@ -145,7 +142,7 @@ func (r *DriverRepository) UpdatePhoto(id int, photoURL string) error {
 
 // Delete удаляет гонщика
 func (r *DriverRepository) Delete(id int) error {
-	query := `DELETE FROM drivers WHERE id = ?`
+	query := `DELETE FROM drivers WHERE id = $1`
 
 	_, err := r.db.Exec(query, id)
 	if err != nil {
@@ -201,7 +198,7 @@ func (r *DriverRepository) GetStats(driverID int) (*models.DriverStats, error) {
 	err := r.db.QueryRow(`
 		SELECT COALESCE(SUM(total_score), 0) 
 		FROM race_results 
-		WHERE driver_id = ?
+		WHERE driver_id = $1
 	`, driverID).Scan(&totalScore)
 	if err != nil {
 		return nil, fmt.Errorf("ошибка получения общего счета: %v", err)
@@ -212,7 +209,7 @@ func (r *DriverRepository) GetStats(driverID int) (*models.DriverStats, error) {
 	err = r.db.QueryRow(`
 		SELECT COUNT(*) 
 		FROM race_results 
-		WHERE driver_id = ?
+		WHERE driver_id = $1
 	`, driverID).Scan(&totalRaces)
 	if err != nil {
 		return nil, fmt.Errorf("ошибка получения количества гонок: %v", err)
@@ -223,7 +220,7 @@ func (r *DriverRepository) GetStats(driverID int) (*models.DriverStats, error) {
 		SELECT r.name, rr.total_score 
 		FROM race_results rr 
 		JOIN races r ON rr.race_id = r.id 
-		WHERE rr.driver_id = ? 
+		WHERE rr.driver_id = $1 
 		ORDER BY r.date DESC LIMIT 5
 	`, driverID)
 	if err != nil {
@@ -288,7 +285,7 @@ func (r *DriverRepository) GetAllWithStats() ([]*models.Driver, map[int]*models.
 // CheckExists проверяет существование гонщика с указанным Telegram ID
 func (r *DriverRepository) CheckExists(telegramID int64) (bool, error) {
 	var exists bool
-	err := r.db.QueryRow("SELECT EXISTS(SELECT 1 FROM drivers WHERE telegram_id = ?)", telegramID).Scan(&exists)
+	err := r.db.QueryRow("SELECT EXISTS(SELECT 1 FROM drivers WHERE telegram_id = $1)", telegramID).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("ошибка проверки существования гонщика: %v", err)
 	}

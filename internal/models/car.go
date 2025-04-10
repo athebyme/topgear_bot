@@ -1,23 +1,27 @@
 package models
 
-import "time"
+import (
+	"database/sql"
+	"time"
+)
 
 // Car представляет автомобиль из Forza Horizon 4
 type Car struct {
-	ID           int     `json:"id"`
-	Name         string  `json:"name"`
-	Year         int     `json:"year"`
-	ImageURL     string  `json:"image_url"`
-	Price        int     `json:"price"`
-	Rarity       string  `json:"rarity"`
-	Speed        float64 `json:"speed"`
-	Handling     float64 `json:"handling"`
-	Acceleration float64 `json:"acceleration"`
-	Launch       float64 `json:"launch"`
-	Braking      float64 `json:"braking"`
-	ClassLetter  string  `json:"class_letter"`
-	ClassNumber  int     `json:"class_number"`
-	Source       string  `json:"source"`
+	ID           int           `json:"id"`
+	Name         string        `json:"name"`
+	YearRaw      sql.NullInt64 `json:"-"`
+	Year         string        `json:"year"`
+	ImageURL     string        `json:"image_url"`
+	Price        int           `json:"price"`
+	Rarity       string        `json:"rarity"`
+	Speed        float64       `json:"speed"`
+	Handling     float64       `json:"handling"`
+	Acceleration float64       `json:"acceleration"`
+	Launch       float64       `json:"launch"`
+	Braking      float64       `json:"braking"`
+	ClassLetter  string        `json:"class_letter"`
+	ClassNumber  int           `json:"class_number"`
+	Source       string        `json:"source"`
 }
 
 // CarClass представляет класс автомобиля

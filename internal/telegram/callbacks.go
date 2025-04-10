@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"fmt"
+	"github.com/athebyme/forza-top-gear-bot/internal/repository"
 	"log"
 	"strconv"
 	"strings"
@@ -34,21 +35,54 @@ func (b *Bot) registerCallbackHandlers() {
 		"edit_race":           b.callbackEditRace,
 		"delete_race":         b.callbackDeleteRace,
 		"confirm_delete_race": b.callbackConfirmDeleteRace,
-		"place":               b.callbackPlace, // ADD THIS
+		"place":               b.callbackPlace,
 		"cancel_delete_race":  b.callbackCancelDeleteRace,
 		"season_results":      b.callbackSeasonResults,
 		"back_to_main":        b.callbackBackToMain,
 		"cancel":              b.callbackCancel,
 		"register_driver":     b.callbackRegisterDriver,
-		// Новые обработчики для работы с машинами
-		"cars":             b.callbackCars,
-		"car_class":        b.callbackCarClass,
-		"car_class_all":    b.callbackCarClassAll,
-		"random_car":       b.callbackRandomCar,
-		"update_cars_db":   b.callbackUpdateCarsDB,
-		"race_assign_cars": b.callbackRaceAssignCars,
-		"view_race_cars":   b.callbackViewRaceCars,
+		"cars":                b.callbackCars,
+		"car_class":           b.callbackCarClass,
+		"car_class_all":       b.callbackCarClassAll,
+		"random_car":          b.callbackRandomCar,
+		"update_cars_db":      b.callbackUpdateCarsDB,
+		"race_assign_cars":    b.callbackRaceAssignCars,
+		"view_race_cars":      b.callbackViewRaceCars,
+		"stats_season":        b.callbackStatsForSeason,
+		"race_progress":       b.callbackRaceProgress,
+		"admin_confirm_car":   b.callbackAdminConfirmCar,
 	}
+
+	b.CallbackHandlers["register_race"] = b.callbackRegisterRace
+	b.CallbackHandlers["driver_command"] = b.callbackDriverCommand
+	b.CallbackHandlers["admin_edit_result"] = b.callbackAdminEditResult
+	b.CallbackHandlers["admin_edit_discipline"] = b.callbackAdminEditDiscipline
+	b.CallbackHandlers["admin_set_place"] = b.callbackAdminSetPlace
+	b.CallbackHandlers["admin_toggle_reroll"] = b.callbackAdminToggleReroll
+}
+
+// callbackStatsForSeason handles showing stats for a specific season
+func (b *Bot) callbackStatsForSeason(query *tgbotapi.CallbackQuery) {
+	chatID := query.Message.Chat.ID
+
+	// Parse season ID from callback data
+	parts := strings.Split(query.Data, ":")
+	if len(parts) < 2 {
+		b.answerCallbackQuery(query.ID, "⚠️ Неверный формат запроса", true)
+		return
+	}
+
+	seasonID, err := strconv.Atoi(parts[1])
+	if err != nil {
+		b.answerCallbackQuery(query.ID, "⚠️ Неверный ID сезона", true)
+		return
+	}
+
+	// Delete the original message
+	b.deleteMessage(chatID, query.Message.MessageID)
+
+	// Show stats for selected season
+	b.showDriverStats(chatID, seasonID)
 }
 
 // handleCallbackQuery обрабатывает callback-запросы от кнопок
@@ -924,7 +958,7 @@ func (b *Bot) callbackCancel(query *tgbotapi.CallbackQuery) {
 	b.deleteMessage(chatID, query.Message.MessageID)
 }
 
-// Add the new handler implementation
+// Add callback handler for place selection
 func (b *Bot) callbackPlace(query *tgbotapi.CallbackQuery) {
 	userID := query.From.ID
 	chatID := query.Message.Chat.ID
@@ -992,41 +1026,85 @@ func (b *Bot) callbackPlace(query *tgbotapi.CallbackQuery) {
 	} else {
 		// Все дисциплины заполнены, сохраняем результат
 		driver, err := b.DriverRepo.GetByTelegramID(userID)
-		// ... (handle driver error) ...
-		if driver == nil {
-			// ... (handle driver not found) ...
-			b.StateManager.ClearState(userID)
-			// Delete the keyboard message since we are done
-			b.deleteMessage(chatID, messageID)
+		if err != nil {
+			log.Printf("Ошибка получения гонщика: %v", err)
+			b.editMessage(chatID, messageID, "⚠️ Произошла ошибка при получении данных гонщика.")
 			return
 		}
 
-		totalScore := 0
-		// ... (calculate total score) ...
-
-		result := &models.RaceResult{
-			// ... (populate result) ...
+		if driver == nil {
+			b.editMessage(chatID, messageID, "⚠️ Гонщик не найден. Используйте /register для регистрации.")
+			b.StateManager.ClearState(userID)
+			return
 		}
 
-		_, err = b.ResultRepo.Create(result)
+		// Calculate total score
+		totalScore := 0
+		for _, place := range results {
+			switch place {
+			case 1:
+				totalScore += 3
+			case 2:
+				totalScore += 2
+			case 3:
+				totalScore += 1
+			}
+		}
+
+		// Check if driver used reroll for this race
+		rerollUsed, err := b.ResultRepo.GetDriverRerollStatus(state.ContextData["race_id"].(int), driver.ID)
 		if err != nil {
-			// ... (handle save error) ...
-			// Optionally edit the message to show error
+			log.Printf("Ошибка проверки статуса реролла: %v", err)
+			rerollUsed = false // Assume not used if error
+		}
+
+		// Apply reroll penalty if used
+		rerollPenalty := 0
+		if rerollUsed {
+			rerollPenalty = 1
+			totalScore -= rerollPenalty
+		}
+
+		// Create race result
+		result := &models.RaceResult{
+			RaceID:        state.ContextData["race_id"].(int),
+			DriverID:      driver.ID,
+			CarNumber:     state.ContextData["car_number"].(int),
+			CarName:       state.ContextData["car_name"].(string),
+			CarPhotoURL:   state.ContextData["car_photo"].(string),
+			Results:       results,
+			TotalScore:    totalScore,
+			RerollPenalty: rerollPenalty,
+		}
+
+		// Save result to DB
+		if rerollPenalty > 0 {
+			_, err = b.ResultRepo.CreateWithRerollPenalty(result)
+		} else {
+			_, err = b.ResultRepo.Create(result)
+		}
+
+		if err != nil {
+			log.Printf("Ошибка сохранения результата: %v", err)
 			b.editMessage(chatID, messageID, "⚠️ Произошла ошибка при сохранении результатов.")
 			return
 		}
 
-		// Очищаем состояние
+		// Clear state
 		b.StateManager.ClearState(userID)
 
+		// Format success message with penalties
+		successMsg := fmt.Sprintf("✅ Результаты успешно сохранены!")
+		if rerollPenalty > 0 {
+			successMsg += fmt.Sprintf("\n\n⚠️ Учтен штраф -%d балл за реролл машины.", rerollPenalty)
+		}
+		successMsg += fmt.Sprintf("\n\nВы набрали %d очков в этой гонке.", totalScore)
+
 		// Edit the message to show success
-		b.editMessage(
-			chatID,
-			messageID,
-			fmt.Sprintf("✅ Результаты успешно сохранены! Вы набрали %d очков в этой гонке.", totalScore),
-		)
-		// Optionally show full results after a delay or provide a button
-		// b.showRaceResults(chatID, result.RaceID) // This would send a new message
+		b.editMessage(chatID, messageID, successMsg)
+
+		// Show race results in a new message
+		b.showRaceResults(chatID, result.RaceID)
 	}
 }
 
@@ -1171,4 +1249,509 @@ func (b *Bot) callbackRegisterDriver(query *tgbotapi.CallbackQuery) {
 	b.handleRegister(&message)
 
 	b.deleteMessage(query.Message.Chat.ID, query.Message.MessageID)
+}
+
+func (b *Bot) callbackRaceProgress(query *tgbotapi.CallbackQuery) {
+	chatID := query.Message.Chat.ID
+	messageID := query.Message.MessageID
+
+	// Parse race ID from callback data
+	parts := strings.Split(query.Data, ":")
+	if len(parts) < 2 {
+		b.answerCallbackQuery(query.ID, "⚠️ Неверный формат запроса", true)
+		return
+	}
+
+	raceID, err := strconv.Atoi(parts[1])
+	if err != nil {
+		b.answerCallbackQuery(query.ID, "⚠️ Неверный ID гонки", true)
+		return
+	}
+
+	// Show race progress
+	b.showRaceProgress(chatID, raceID)
+
+	// Delete original message
+	b.deleteMessage(chatID, messageID)
+}
+
+// showRaceProgress shows the current progress of a race including all submitted results
+func (b *Bot) showRaceProgress(chatID int64, raceID int) {
+	// Get race information
+	race, err := b.RaceRepo.GetByID(raceID)
+	if err != nil {
+		log.Printf("Ошибка получения информации о гонке: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении информации о гонке.")
+		return
+	}
+
+	if race == nil {
+		b.sendMessage(chatID, "⚠️ Гонка не найдена.")
+		return
+	}
+
+	// Get all registered drivers
+	registrations, err := b.RaceRepo.GetRegisteredDrivers(raceID)
+	if err != nil {
+		log.Printf("Ошибка получения зарегистрированных гонщиков: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении списка участников.")
+		return
+	}
+
+	// Get all submitted results
+	results, err := b.ResultRepo.GetRaceResultsWithRerollPenalty(raceID)
+	if err != nil {
+		log.Printf("Ошибка получения результатов: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении результатов гонки.")
+		return
+	}
+
+	// Create a map of driver IDs to results for quick lookup
+	driverResults := make(map[int]*repository.RaceResultWithDriver)
+	for _, result := range results {
+		driverResults[result.DriverID] = result
+	}
+
+	// Format header
+	text := fmt.Sprintf("🏁 *Ход гонки: %s*\n\n", race.Name)
+	text += fmt.Sprintf("📅 %s\n", b.formatDate(race.Date))
+	text += fmt.Sprintf("🚗 Класс: %s\n", race.CarClass)
+	text += fmt.Sprintf("🏎️ Дисциплины: %s\n\n", strings.Join(race.Disciplines, ", "))
+
+	// Add race state
+	switch race.State {
+	case models.RaceStateNotStarted:
+		text += "⏳ *Статус: Регистрация*\n\n"
+	case models.RaceStateInProgress:
+		text += "🏎️ *Статус: В процессе*\n\n"
+	case models.RaceStateCompleted:
+		text += "✅ *Статус: Завершена*\n\n"
+	}
+
+	// Add progress table
+	text += "*Прогресс участников:*\n\n"
+
+	if len(registrations) == 0 {
+		text += "Нет зарегистрированных участников."
+	} else {
+		// For each registered driver
+		for i, reg := range registrations {
+			// Get car assignment
+			assignment, err := b.CarRepo.GetDriverCarAssignment(raceID, reg.DriverID)
+			if err != nil || assignment == nil {
+				continue
+			}
+
+			// Check if driver has submitted results
+			result, hasResult := driverResults[reg.DriverID]
+
+			text += fmt.Sprintf("%d. *%s* (%s)\n", i+1, reg.DriverName, assignment.Car.Name)
+			text += fmt.Sprintf("🔢 Номер: %d\n", assignment.AssignmentNumber)
+
+			// If reroll was used, show it
+			if assignment.IsReroll {
+				text += "🎲 Был использован реролл\n"
+			}
+
+			// Show results if available
+			if hasResult {
+				// Add discipline results
+				var placesText []string
+				for _, discipline := range race.Disciplines {
+					place := result.Results[discipline]
+					emoji := getPlaceEmoji(place)
+					placesText = append(placesText, fmt.Sprintf("%s %s: %s", emoji, discipline, getPlaceText(place)))
+				}
+
+				text += fmt.Sprintf("📊 %s\n", strings.Join(placesText, " | "))
+
+				// Add reroll penalty if any
+				if result.RerollPenalty > 0 {
+					text += fmt.Sprintf("⚠️ Штраф за реролл: -%d\n", result.RerollPenalty)
+				}
+
+				text += fmt.Sprintf("🏆 Текущий счет: %d очков\n", result.TotalScore)
+			} else {
+				text += "❓ Результаты еще не поданы\n"
+			}
+
+			text += "\n"
+		}
+	}
+
+	// Create keyboard
+	var keyboard [][]tgbotapi.InlineKeyboardButton
+
+	// Add relevant buttons based on race state
+	if race.State == models.RaceStateInProgress {
+		// Add add result button
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"➕ Добавить свой результат",
+				fmt.Sprintf("add_result:%d", raceID),
+			),
+		))
+
+		// Add view cars button
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"🚗 Посмотреть машины",
+				fmt.Sprintf("view_race_cars:%d", raceID),
+			),
+		))
+	}
+
+	// Add back button
+	keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData(
+			"🔙 Назад к гонке",
+			fmt.Sprintf("race_details:%d", raceID),
+		),
+	))
+
+	b.sendMessageWithKeyboard(chatID, text, tgbotapi.NewInlineKeyboardMarkup(keyboard...))
+}
+
+// callbackAdminEditResult handles the admin editing a driver's result
+func (b *Bot) callbackAdminEditResult(query *tgbotapi.CallbackQuery) {
+	userID := query.From.ID
+	chatID := query.Message.Chat.ID
+
+	// Check admin rights
+	if !b.IsAdmin(userID) {
+		b.answerCallbackQuery(query.ID, "⛔ У вас нет прав для редактирования результатов", true)
+		return
+	}
+
+	// Parse parameters from callback data (admin_edit_result:resultID)
+	parts := strings.Split(query.Data, ":")
+	if len(parts) < 2 {
+		b.answerCallbackQuery(query.ID, "⚠️ Неверный формат запроса", true)
+		return
+	}
+
+	resultID, err := strconv.Atoi(parts[1])
+	if err != nil {
+		b.answerCallbackQuery(query.ID, "⚠️ Неверный ID результата", true)
+		return
+	}
+
+	// Get the result details
+	result, err := b.ResultRepo.GetByID(resultID)
+	if err != nil {
+		log.Printf("Ошибка получения результата: %v", err)
+		b.answerCallbackQuery(query.ID, "⚠️ Произошла ошибка при получении результата", true)
+		return
+	}
+
+	if result == nil {
+		b.answerCallbackQuery(query.ID, "⚠️ Результат не найден", true)
+		return
+	}
+
+	// Get driver information
+	driver, err := b.DriverRepo.GetByID(result.DriverID)
+	if err != nil {
+		log.Printf("Ошибка получения данных гонщика: %v", err)
+		b.answerCallbackQuery(query.ID, "⚠️ Произошла ошибка при получении данных гонщика", true)
+		return
+	}
+
+	// Get race information
+	race, err := b.RaceRepo.GetByID(result.RaceID)
+	if err != nil {
+		log.Printf("Ошибка получения информации о гонке: %v", err)
+		b.answerCallbackQuery(query.ID, "⚠️ Произошла ошибка при получении информации о гонке", true)
+		return
+	}
+
+	// Format message with the current results
+	text := fmt.Sprintf("✏️ *Редактирование результатов*\n\n")
+	text += fmt.Sprintf("Гонка: *%s*\n", race.Name)
+	text += fmt.Sprintf("Гонщик: *%s*\n", driver.Name)
+	text += fmt.Sprintf("Машина: *%s* (номер %d)\n\n", result.CarName, result.CarNumber)
+
+	text += "*Текущие результаты:*\n"
+	for _, discipline := range race.Disciplines {
+		place := result.Results[discipline]
+		emoji := getPlaceEmoji(place)
+		text += fmt.Sprintf("• %s %s: %s\n", emoji, discipline, getPlaceText(place))
+	}
+
+	if result.RerollPenalty > 0 {
+		text += fmt.Sprintf("\n⚠️ Штраф за реролл: -%d\n", result.RerollPenalty)
+	}
+
+	text += fmt.Sprintf("\n🏆 Всего очков: %d\n\n", result.TotalScore)
+	text += "Выберите дисциплину для редактирования:"
+
+	// Create keyboard with disciplines
+	var keyboard [][]tgbotapi.InlineKeyboardButton
+
+	for _, discipline := range race.Disciplines {
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				fmt.Sprintf("%s %s", getPlaceEmoji(result.Results[discipline]), discipline),
+				fmt.Sprintf("admin_edit_discipline:%d:%s", resultID, discipline),
+			),
+		))
+	}
+
+	// Add reroll penalty toggle button
+	rerollToggleText := "🎲 Добавить штраф за реролл"
+	if result.RerollPenalty > 0 {
+		rerollToggleText = "🎲 Убрать штраф за реролл"
+	}
+
+	keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData(
+			rerollToggleText,
+			fmt.Sprintf("admin_toggle_reroll:%d", resultID),
+		),
+	))
+
+	// Add save/back buttons
+	keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData(
+			"🔙 Назад",
+			fmt.Sprintf("race_results:%d", result.RaceID),
+		),
+	))
+
+	b.sendMessageWithKeyboard(chatID, text, tgbotapi.NewInlineKeyboardMarkup(keyboard...))
+	b.deleteMessage(chatID, query.Message.MessageID)
+}
+
+// callbackAdminEditDiscipline handles editing a specific discipline result
+func (b *Bot) callbackAdminEditDiscipline(query *tgbotapi.CallbackQuery) {
+	userID := query.From.ID
+	chatID := query.Message.Chat.ID
+
+	// Check admin rights
+	if !b.IsAdmin(userID) {
+		b.answerCallbackQuery(query.ID, "⛔ У вас нет прав для редактирования результатов", true)
+		return
+	}
+
+	// Parse parameters from callback data (admin_edit_discipline:resultID:disciplineName)
+	parts := strings.Split(query.Data, ":")
+	if len(parts) < 3 {
+		b.answerCallbackQuery(query.ID, "⚠️ Неверный формат запроса", true)
+		return
+	}
+
+	resultID, err := strconv.Atoi(parts[1])
+	if err != nil {
+		b.answerCallbackQuery(query.ID, "⚠️ Неверный ID результата", true)
+		return
+	}
+
+	disciplineName := parts[2]
+
+	// Get the result details
+	result, err := b.ResultRepo.GetByID(resultID)
+	if err != nil {
+		log.Printf("Ошибка получения результата: %v", err)
+		b.answerCallbackQuery(query.ID, "⚠️ Произошла ошибка при получении результата", true)
+		return
+	}
+
+	if result == nil {
+		b.answerCallbackQuery(query.ID, "⚠️ Результат не найден", true)
+		return
+	}
+
+	// Show place selection keyboard for this discipline
+	text := fmt.Sprintf("Выберите место для дисциплины '%s':", disciplineName)
+
+	// Create keyboard with place options
+	var keyboard [][]tgbotapi.InlineKeyboardButton
+
+	// Place options row
+	keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData(
+			"🥇 1 место",
+			fmt.Sprintf("admin_set_place:%d:%s:1", resultID, disciplineName),
+		),
+		tgbotapi.NewInlineKeyboardButtonData(
+			"🥈 2 место",
+			fmt.Sprintf("admin_set_place:%d:%s:2", resultID, disciplineName),
+		),
+		tgbotapi.NewInlineKeyboardButtonData(
+			"🥉 3 место",
+			fmt.Sprintf("admin_set_place:%d:%s:3", resultID, disciplineName),
+		),
+	))
+
+	keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData(
+			"❌ Не участвовал",
+			fmt.Sprintf("admin_set_place:%d:%s:0", resultID, disciplineName),
+		),
+	))
+
+	// Back button
+	keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData(
+			"🔙 Назад",
+			fmt.Sprintf("admin_edit_result:%d", resultID),
+		),
+	))
+
+	b.sendMessageWithKeyboard(chatID, text, tgbotapi.NewInlineKeyboardMarkup(keyboard...))
+	b.deleteMessage(chatID, query.Message.MessageID)
+}
+
+// callbackAdminSetPlace handles setting a new place for a discipline
+func (b *Bot) callbackAdminSetPlace(query *tgbotapi.CallbackQuery) {
+	userID := query.From.ID
+
+	// Check admin rights
+	if !b.IsAdmin(userID) {
+		b.answerCallbackQuery(query.ID, "⛔ У вас нет прав для редактирования результатов", true)
+		return
+	}
+
+	// Parse parameters (admin_set_place:resultID:disciplineName:place)
+	parts := strings.Split(query.Data, ":")
+	if len(parts) < 4 {
+		b.answerCallbackQuery(query.ID, "⚠️ Неверный формат запроса", true)
+		return
+	}
+
+	resultID, err := strconv.Atoi(parts[1])
+	if err != nil {
+		b.answerCallbackQuery(query.ID, "⚠️ Неверный ID результата", true)
+		return
+	}
+
+	disciplineName := parts[2]
+
+	place, err := strconv.Atoi(parts[3])
+	if err != nil || place < 0 || place > 3 {
+		b.answerCallbackQuery(query.ID, "⚠️ Неверное значение места", true)
+		return
+	}
+
+	// Get the result
+	result, err := b.ResultRepo.GetByID(resultID)
+	if err != nil {
+		log.Printf("Ошибка получения результата: %v", err)
+		b.answerCallbackQuery(query.ID, "⚠️ Произошла ошибка при получении результата", true)
+		return
+	}
+
+	if result == nil {
+		b.answerCallbackQuery(query.ID, "⚠️ Результат не найден", true)
+		return
+	}
+
+	// Update the place for this discipline
+	result.Results[disciplineName] = place
+
+	// Recalculate total score
+	totalScore := 0
+	for _, p := range result.Results {
+		switch p {
+		case 1:
+			totalScore += 3
+		case 2:
+			totalScore += 2
+		case 3:
+			totalScore += 1
+		}
+	}
+
+	// Apply reroll penalty if it exists
+	if result.RerollPenalty > 0 {
+		totalScore -= result.RerollPenalty
+	}
+
+	result.TotalScore = totalScore
+
+	// Save the updated result
+	err = b.ResultRepo.Update(result)
+	if err != nil {
+		log.Printf("Ошибка обновления результата: %v", err)
+		b.answerCallbackQuery(query.ID, "⚠️ Произошла ошибка при сохранении результата", true)
+		return
+	}
+
+	b.answerCallbackQuery(query.ID, "✅ Результат обновлен!", false)
+
+	// Show the edit result screen again
+	b.callbackAdminEditResult(&tgbotapi.CallbackQuery{
+		Data:    fmt.Sprintf("admin_edit_result:%d", resultID),
+		From:    query.From,
+		Message: query.Message,
+	})
+}
+
+// callbackAdminToggleReroll toggles the reroll penalty for a result
+func (b *Bot) callbackAdminToggleReroll(query *tgbotapi.CallbackQuery) {
+	userID := query.From.ID
+
+	// Check admin rights
+	if !b.IsAdmin(userID) {
+		b.answerCallbackQuery(query.ID, "⛔ У вас нет прав для редактирования результатов", true)
+		return
+	}
+
+	// Parse parameters (admin_toggle_reroll:resultID)
+	parts := strings.Split(query.Data, ":")
+	if len(parts) < 2 {
+		b.answerCallbackQuery(query.ID, "⚠️ Неверный формат запроса", true)
+		return
+	}
+
+	resultID, err := strconv.Atoi(parts[1])
+	if err != nil {
+		b.answerCallbackQuery(query.ID, "⚠️ Неверный ID результата", true)
+		return
+	}
+
+	// Get the result
+	result, err := b.ResultRepo.GetByID(resultID)
+	if err != nil {
+		log.Printf("Ошибка получения результата: %v", err)
+		b.answerCallbackQuery(query.ID, "⚠️ Произошла ошибка при получении результата", true)
+		return
+	}
+
+	if result == nil {
+		b.answerCallbackQuery(query.ID, "⚠️ Результат не найден", true)
+		return
+	}
+
+	// Toggle reroll penalty (1 <-> 0)
+	if result.RerollPenalty > 0 {
+		result.RerollPenalty = 0
+		result.TotalScore += 1 // Remove penalty
+	} else {
+		result.RerollPenalty = 1
+		result.TotalScore -= 1 // Apply penalty
+	}
+
+	// Save the updated result
+	err = b.ResultRepo.Update(result)
+	if err != nil {
+		log.Printf("Ошибка обновления результата: %v", err)
+		b.answerCallbackQuery(query.ID, "⚠️ Произошла ошибка при сохранении результата", true)
+		return
+	}
+
+	// Get the appropriate message
+	message := "✅ Штраф за реролл добавлен!"
+	if result.RerollPenalty == 0 {
+		message = "✅ Штраф за реролл убран!"
+	}
+
+	b.answerCallbackQuery(query.ID, message, false)
+
+	// Show the edit result screen again
+	b.callbackAdminEditResult(&tgbotapi.CallbackQuery{
+		Data:    fmt.Sprintf("admin_edit_result:%d", resultID),
+		From:    query.From,
+		Message: query.Message,
+	})
 }

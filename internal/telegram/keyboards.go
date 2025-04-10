@@ -454,12 +454,11 @@ func RaceCarConfirmationKeyboard(raceID int, rerollAvailable bool) tgbotapi.Inli
 	return tgbotapi.NewInlineKeyboardMarkup(keyboard...)
 }
 
-// Update MainKeyboard to ensure the registration button has the correct callback
 func MainKeyboard() tgbotapi.InlineKeyboardMarkup {
 	return tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("🏁 Гонки", "races"),
-			tgbotapi.NewInlineKeyboardButtonData("📝 Регистрация", "register_driver"), // Fixed callback data
+			tgbotapi.NewInlineKeyboardButtonData("📝 Регистрация", "register_driver"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("👨‍🏎️ Гонщики", "drivers"),
@@ -468,6 +467,9 @@ func MainKeyboard() tgbotapi.InlineKeyboardMarkup {
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("🚗 Машины", "cars"),
 			tgbotapi.NewInlineKeyboardButtonData("🏆 Сезоны", "seasons"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🏆 Рейтинг", "leaderboard"),
 		),
 	)
 }

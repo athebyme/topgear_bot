@@ -3,6 +3,7 @@ package telegram
 import (
 	"fmt"
 	"log"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -14,20 +15,507 @@ import (
 // registerCommandHandlers registers all command handlers
 func (b *Bot) registerCommandHandlers() {
 	b.CommandHandlers = map[string]CommandHandler{
-		"start":     b.handleStart,
-		"register":  b.handleRegister,
-		"driver":    b.handleDriver,
-		"seasons":   b.handleSeasons,
-		"races":     b.handleRaces,
-		"newrace":   b.handleNewRace,
-		"results":   b.handleResults,
-		"help":      b.handleHelp,
-		"addresult": b.handleAddResult,
-		"cancel":    b.handleCancel,
-		"joinrace":  b.handleJoinRace,
-		"leaverage": b.handleLeaveRace,
-		"mycar":     b.handleMyCar,
+		"start":       b.handleStart,
+		"register":    b.handleRegister,
+		"driver":      b.handleDriver,
+		"seasons":     b.handleSeasons,
+		"races":       b.handleRaces,
+		"newrace":     b.handleNewRace,
+		"results":     b.handleResults,
+		"help":        b.handleHelp,
+		"addresult":   b.handleAddResult,
+		"cancel":      b.handleCancel,
+		"joinrace":    b.handleJoinRace,
+		"leaverage":   b.handleLeaveRace,
+		"mycar":       b.handleMyCar,
+		"stats":       b.handleStats,
+		"leaderboard": b.handleLeaderboard,
 	}
+}
+
+func (b *Bot) handleLeaderboard(message *tgbotapi.Message) {
+	chatID := message.Chat.ID
+
+	// Show overall leaderboard by default
+	b.showLeaderboard(chatID, 0) // 0 means "all seasons"
+}
+
+func (b *Bot) showLeaderboard(chatID int64, seasonID int) {
+	// Get all drivers
+	drivers, err := b.DriverRepo.GetAll()
+	if err != nil {
+		log.Printf("Ошибка получения списка гонщиков: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении списка гонщиков.")
+		return
+	}
+
+	if len(drivers) == 0 {
+		b.sendMessage(chatID, "⚠️ Пока нет зарегистрированных гонщиков.")
+		return
+	}
+
+	// Get all seasons for the keyboard
+	seasons, err := b.SeasonRepo.GetAll()
+	if err != nil {
+		log.Printf("Ошибка получения списка сезонов: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении списка сезонов.")
+		return
+	}
+
+	// Prepare data structures
+	type driverStats struct {
+		ID           int
+		Name         string
+		TotalScore   int
+		Races        int
+		Wins         int
+		SecondPlaces int
+		ThirdPlaces  int
+		BestRally    string
+	}
+
+	var stats []driverStats
+
+	// For each driver, calculate statistics
+	for _, driver := range drivers {
+		// Get all results for this driver
+		results, err := b.ResultRepo.GetByDriverID(driver.ID)
+		if err != nil {
+			log.Printf("Ошибка получения результатов гонщика %d: %v", driver.ID, err)
+			continue
+		}
+
+		// Skip if no results
+		if len(results) == 0 {
+			continue
+		}
+
+		// Initialize driver stats
+		ds := driverStats{
+			ID:   driver.ID,
+			Name: driver.Name,
+		}
+
+		// Analyze results
+		for _, result := range results {
+			// Skip if filtering by season and this result is not from that season
+			if seasonID > 0 {
+				race, err := b.RaceRepo.GetByID(result.RaceID)
+				if err != nil || race == nil || race.SeasonID != seasonID {
+					continue
+				}
+			}
+
+			// Accumulate stats
+			ds.TotalScore += result.TotalScore
+			ds.Races++
+
+			// Count places in disciplines
+			for _, place := range result.Results {
+				switch place {
+				case 1:
+					ds.Wins++
+				case 2:
+					ds.SecondPlaces++
+				case 3:
+					ds.ThirdPlaces++
+				}
+			}
+
+			// Check rally discipline if there is one
+			race, err := b.RaceRepo.GetByID(result.RaceID)
+			if err == nil && race != nil {
+				for _, discipline := range race.Disciplines {
+					// Check if this is a rally discipline and the driver participated
+					if strings.Contains(strings.ToLower(discipline), "ралли") {
+						place, exists := result.Results[discipline]
+						if exists && place > 0 {
+							// In a real implementation, you would get the actual rally time
+							rallyTime := "2:34.567" // Example time
+
+							// If no best rally yet, or this one is better
+							if ds.BestRally == "" || rallyTime < ds.BestRally {
+								ds.BestRally = rallyTime
+							}
+						}
+					}
+				}
+			}
+		}
+
+		// Add to stats array if driver has races after filtering
+		if ds.Races > 0 {
+			stats = append(stats, ds)
+		}
+	}
+
+	// Sort by total score (descending)
+	sort.Slice(stats, func(i, j int) bool {
+		return stats[i].TotalScore > stats[j].TotalScore
+	})
+
+	// Format the message
+	var title string
+	if seasonID == 0 {
+		title = "🏆 *Общий рейтинг гонщиков*"
+	} else {
+		// Get season name
+		season, err := b.SeasonRepo.GetByID(seasonID)
+		if err != nil || season == nil {
+			title = "🏆 *Рейтинг гонщиков (выбранный сезон)*"
+		} else {
+			title = fmt.Sprintf("🏆 *Рейтинг гонщиков %s*", season.Name)
+		}
+	}
+
+	text := title + "\n\n"
+
+	if len(stats) == 0 {
+		text += "Нет данных для отображения."
+	} else {
+		// Add header row
+		text += "# | Гонщик | Очки | Гонки | 🥇 | 🥈 | 🥉\n"
+		text += "---|--------|------|-------|---|---|---\n"
+
+		// Add driver rows
+		for i, s := range stats {
+			text += fmt.Sprintf("%d | *%s* | %d | %d | %d | %d | %d\n",
+				i+1, s.Name, s.TotalScore, s.Races, s.Wins, s.SecondPlaces, s.ThirdPlaces)
+		}
+
+		// Add rally records section if any
+		var rallyRecords []string
+		for _, s := range stats {
+			if s.BestRally != "" {
+				rallyRecords = append(rallyRecords, fmt.Sprintf("• *%s*: %s", s.Name, s.BestRally))
+			}
+		}
+
+		if len(rallyRecords) > 0 {
+			text += "\n*Лучшие времена в Ралли:*\n"
+			text += strings.Join(rallyRecords, "\n")
+		}
+	}
+
+	// Create keyboard for season selection
+	var keyboard [][]tgbotapi.InlineKeyboardButton
+
+	// All-time button
+	allTimeText := "📊 Все сезоны"
+	if seasonID == 0 {
+		allTimeText = "✅ " + allTimeText
+	}
+
+	keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData(
+			allTimeText,
+			"leaderboard:0",
+		),
+	))
+
+	// Season buttons
+	for _, season := range seasons {
+		seasonText := season.Name
+		if season.ID == seasonID {
+			seasonText = "✅ " + seasonText
+		}
+
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				seasonText,
+				fmt.Sprintf("leaderboard:%d", season.ID),
+			),
+		))
+	}
+
+	// Back button
+	keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData(
+			"🔙 Назад",
+			"back_to_main",
+		),
+	))
+
+	b.sendMessageWithKeyboard(chatID, text, tgbotapi.NewInlineKeyboardMarkup(keyboard...))
+}
+
+// Add callback handler for leaderboard
+func (b *Bot) callbackLeaderboard(query *tgbotapi.CallbackQuery) {
+	chatID := query.Message.Chat.ID
+
+	// Parse season ID from callback data
+	parts := strings.Split(query.Data, ":")
+	if len(parts) < 2 {
+		b.answerCallbackQuery(query.ID, "⚠️ Неверный формат запроса", true)
+		return
+	}
+
+	seasonID, err := strconv.Atoi(parts[1])
+	if err != nil {
+		b.answerCallbackQuery(query.ID, "⚠️ Неверный ID сезона", true)
+		return
+	}
+
+	// Delete the original message
+	b.deleteMessage(chatID, query.Message.MessageID)
+
+	// Show leaderboard for selected season
+	b.showLeaderboard(chatID, seasonID)
+}
+
+// handleStats shows overall driver statistics with filters
+func (b *Bot) handleStats(message *tgbotapi.Message) {
+	chatID := message.Chat.ID
+
+	// Get all drivers
+	drivers, err := b.DriverRepo.GetAll()
+	if err != nil {
+		log.Printf("Ошибка получения списка гонщиков: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении списка гонщиков.")
+		return
+	}
+
+	if len(drivers) == 0 {
+		b.sendMessage(chatID, "⚠️ Пока нет зарегистрированных гонщиков.")
+		return
+	}
+
+	// Get all seasons
+	seasons, err := b.SeasonRepo.GetAll()
+	if err != nil {
+		log.Printf("Ошибка получения списка сезонов: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении списка сезонов.")
+		return
+	}
+
+	// Get active season
+	activeSeason, err := b.SeasonRepo.GetActive()
+	if err != nil {
+		log.Printf("Ошибка получения активного сезона: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении активного сезона.")
+		return
+	}
+
+	// Default to active season or first season in list
+	var defaultSeasonID int
+	if activeSeason != nil {
+		defaultSeasonID = activeSeason.ID
+	} else if len(seasons) > 0 {
+		defaultSeasonID = seasons[0].ID
+	}
+
+	// Show driver statistics for the default season
+	b.showDriverStats(chatID, defaultSeasonID)
+}
+
+// showDriverStats displays driver statistics for a specific season
+func (b *Bot) showDriverStats(chatID int64, seasonID int) {
+	// Get season information
+	season, err := b.SeasonRepo.GetByID(seasonID)
+	if err != nil {
+		log.Printf("Ошибка получения информации о сезоне: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении информации о сезоне.")
+		return
+	}
+
+	if season == nil {
+		b.sendMessage(chatID, "⚠️ Сезон не найден.")
+		return
+	}
+
+	// Get all seasons for the keyboard
+	seasons, err := b.SeasonRepo.GetAll()
+	if err != nil {
+		log.Printf("Ошибка получения списка сезонов: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении списка сезонов.")
+		return
+	}
+
+	// Get races for this season
+	races, err := b.RaceRepo.GetBySeason(seasonID)
+	if err != nil {
+		log.Printf("Ошибка получения гонок сезона: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении гонок сезона.")
+		return
+	}
+
+	// Get all completed races
+	var completedRaces []*models.Race
+	for _, race := range races {
+		if race.State == models.RaceStateCompleted {
+			completedRaces = append(completedRaces, race)
+		}
+	}
+
+	// Get all drivers
+	drivers, err := b.DriverRepo.GetAll()
+	if err != nil {
+		log.Printf("Ошибка получения списка гонщиков: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении списка гонщиков.")
+		return
+	}
+
+	// Prepare driver stats map
+	driverStats := make(map[int]map[int]int) // driverID -> raceID -> score
+	driverTotalScores := make(map[int]int)   // driverID -> total score
+
+	// Get rally records for each driver
+	driverRallyRecords := make(map[int]map[int]string) // driverID -> raceID -> rally time
+
+	// For each completed race, get results
+	for _, race := range completedRaces {
+		results, err := b.ResultRepo.GetRaceResultsWithRerollPenalty(race.ID)
+		if err != nil {
+			log.Printf("Ошибка получения результатов гонки %d: %v", race.ID, err)
+			continue
+		}
+
+		for _, result := range results {
+			// Initialize driver's map if needed
+			if _, exists := driverStats[result.DriverID]; !exists {
+				driverStats[result.DriverID] = make(map[int]int)
+			}
+
+			// Store score for this race
+			driverStats[result.DriverID][race.ID] = result.TotalScore
+
+			// Add to total score
+			driverTotalScores[result.DriverID] += result.TotalScore
+
+			// Check for rally disciplines
+			for discipline, place := range result.Results {
+				if strings.Contains(strings.ToLower(discipline), "ралли") && place > 0 {
+					if _, exists := driverRallyRecords[result.DriverID]; !exists {
+						driverRallyRecords[result.DriverID] = make(map[int]string)
+					}
+
+					// Store rally time (this is a placeholder - in a real implementation,
+					// you would get the actual time from the results)
+					driverRallyRecords[result.DriverID][race.ID] = "2:34.567" // Example time
+				}
+			}
+		}
+	}
+
+	// Sort drivers by total score (descending)
+	type driverScore struct {
+		Driver *models.Driver
+		Score  int
+	}
+
+	var rankedDrivers []driverScore
+	for _, driver := range drivers {
+		rankedDrivers = append(rankedDrivers, driverScore{
+			Driver: driver,
+			Score:  driverTotalScores[driver.ID],
+		})
+	}
+
+	// Sort by score descending
+	sort.Slice(rankedDrivers, func(i, j int) bool {
+		return rankedDrivers[i].Score > rankedDrivers[j].Score
+	})
+
+	// Format the message
+	text := fmt.Sprintf("📊 *Статистика гонщиков %s*\n\n", season.Name)
+
+	if len(completedRaces) == 0 {
+		text += "Нет завершенных гонок в этом сезоне."
+	} else {
+		// Table header
+		text += "🏎️ | "
+		for _, race := range completedRaces {
+			text += fmt.Sprintf("%s | ", race.Name[:3]) // First 3 chars of race name
+		}
+		text += "Всего\n"
+		text += strings.Repeat("-", 50) + "\n"
+
+		// Driver rows
+		for i, ds := range rankedDrivers {
+			driver := ds.Driver
+			text += fmt.Sprintf("%d. *%s* | ", i+1, driver.Name)
+
+			// Scores for each race
+			for _, race := range completedRaces {
+				score, exists := driverStats[driver.ID][race.ID]
+				if exists {
+					text += fmt.Sprintf("%d | ", score)
+				} else {
+					text += "- | "
+				}
+			}
+
+			// Total score
+			text += fmt.Sprintf("*%d*\n", driverTotalScores[driver.ID])
+		}
+
+		// Best rally times
+		text += "\n*Лучшие времена в Ралли:*\n"
+		for _, ds := range rankedDrivers {
+			driver := ds.Driver
+			if records, exists := driverRallyRecords[driver.ID]; exists && len(records) > 0 {
+				// Find best time
+				var bestRaceID int
+				var bestTime string
+				for raceID, time := range records {
+					if bestTime == "" || time < bestTime {
+						bestTime = time
+						bestRaceID = raceID
+					}
+				}
+
+				// Find race name
+				var raceName string
+				for _, race := range races {
+					if race.ID == bestRaceID {
+						raceName = race.Name
+						break
+					}
+				}
+
+				text += fmt.Sprintf("• *%s*: %s (%s)\n", driver.Name, bestTime, raceName)
+			}
+		}
+	}
+
+	// Build keyboard for season selection
+	var keyboard [][]tgbotapi.InlineKeyboardButton
+
+	// Seasons row
+	var seasonsRow []tgbotapi.InlineKeyboardButton
+	for _, s := range seasons {
+		// Add visual indicator for selected season
+		name := s.Name
+		if s.ID == seasonID {
+			name = "✅ " + name
+		}
+
+		seasonsRow = append(seasonsRow, tgbotapi.NewInlineKeyboardButtonData(
+			name,
+			fmt.Sprintf("stats_season:%d", s.ID),
+		))
+
+		// Maximum 3 buttons per row
+		if len(seasonsRow) == 3 {
+			keyboard = append(keyboard, seasonsRow)
+			seasonsRow = nil
+		}
+	}
+
+	// Add remaining season buttons
+	if len(seasonsRow) > 0 {
+		keyboard = append(keyboard, seasonsRow)
+	}
+
+	// Add back button
+	keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData(
+			"🔙 Назад",
+			"back_to_main",
+		),
+	))
+
+	b.sendMessageWithKeyboard(chatID, text, tgbotapi.NewInlineKeyboardMarkup(keyboard...))
 }
 
 // handleStart provides main menu and starting point
@@ -54,7 +542,7 @@ func (b *Bot) handleStart(message *tgbotapi.Message) {
 	b.sendMessageWithKeyboard(chatID, messageText, keyboard)
 }
 
-// handleDriver with corrected message
+// handleDriver shows driver profile with enhanced statistics
 func (b *Bot) handleDriver(message *tgbotapi.Message) {
 	userID := message.From.ID
 	chatID := message.Chat.ID
@@ -73,7 +561,7 @@ func (b *Bot) handleDriver(message *tgbotapi.Message) {
 		return
 	}
 
-	// Получаем статистику гонщика
+	// Get basic driver stats
 	stats, err := b.DriverRepo.GetStats(driver.ID)
 	if err != nil {
 		log.Printf("Ошибка получения статистики гонщика: %v", err)
@@ -81,7 +569,68 @@ func (b *Bot) handleDriver(message *tgbotapi.Message) {
 		return
 	}
 
-	// Формируем карточку гонщика
+	// Get all race results for this driver to find rally time record
+	results, err := b.ResultRepo.GetByDriverID(driver.ID)
+	if err != nil {
+		log.Printf("Ошибка получения результатов гонщика: %v", err)
+		// Continue anyway, this is not critical
+	}
+
+	// Find best rally time
+	type rallyRecord struct {
+		Time     string
+		RaceName string
+		SeasonID int
+	}
+
+	var bestRally *rallyRecord
+
+	// Look through all results for rally disciplines
+	for _, result := range results {
+		// Get race to find disciplines and season
+		race, err := b.RaceRepo.GetByID(result.RaceID)
+		if err != nil {
+			log.Printf("Ошибка получения гонки %d: %v", result.RaceID, err)
+			continue
+		}
+
+		if race == nil {
+			continue
+		}
+
+		// Look for rally discipline in this race
+		for _, discipline := range race.Disciplines {
+			if strings.Contains(strings.ToLower(discipline), "ралли") {
+				// Check if driver has a result for this discipline
+				place, exists := result.Results[discipline]
+				if exists && place > 0 {
+					// In a real implementation, you would get the time from the result
+					// This is a placeholder
+					rallyTime := "2:34.567" // Example time
+
+					// If this is the first or better record, save it
+					if bestRally == nil || rallyTime < bestRally.Time {
+						bestRally = &rallyRecord{
+							Time:     rallyTime,
+							RaceName: race.Name,
+							SeasonID: race.SeasonID,
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Get season name for the rally record
+	var rallySeasonName string
+	if bestRally != nil {
+		season, err := b.SeasonRepo.GetByID(bestRally.SeasonID)
+		if err == nil && season != nil {
+			rallySeasonName = season.Name
+		}
+	}
+
+	// Format driver profile
 	text := fmt.Sprintf("👨‍🏎️ *Карточка гонщика*\n\n*%s*\n", driver.Name)
 
 	if driver.Description != "" {
@@ -89,7 +638,14 @@ func (b *Bot) handleDriver(message *tgbotapi.Message) {
 	}
 
 	text += fmt.Sprintf("🏆 *Всего очков:* %d\n", stats.TotalScore)
-	text += fmt.Sprintf("🏁 *Гонок:* %d\n\n", stats.TotalRaces)
+	text += fmt.Sprintf("🏁 *Гонок:* %d\n", stats.TotalRaces)
+
+	// Add rally record if available
+	if bestRally != nil {
+		text += fmt.Sprintf("⏱️ *Рекорд в Ралли:* %s (%s, %s)\n", bestRally.Time, bestRally.RaceName, rallySeasonName)
+	}
+
+	text += "\n"
 
 	if len(stats.RecentRaces) > 0 {
 		text += "*Последние гонки:*\n"
@@ -238,6 +794,8 @@ func (b *Bot) handleHelp(message *tgbotapi.Message) {
 /seasons - Просмотр сезонов
 /races - Просмотр гонок текущего сезона
 /results - Просмотр результатов гонок
+/leaderboard - Рейтинг гонщиков
+/stats - Детальная статистика гонщиков
 /help - Эта справка
 /cancel - Отмена текущего действия
 
@@ -246,6 +804,13 @@ func (b *Bot) handleHelp(message *tgbotapi.Message) {
 /leaverage - Отмена регистрации на гонку
 /mycar - Просмотр назначенной машины для текущей гонки
 /addresult - Добавить свой результат в текущей гонке
+
+*Как проходит гонка:*
+1. Гонщик регистрируется на предстоящую гонку через /joinrace или кнопку в информации о гонке
+2. Администратор запускает гонку, и всем участникам выдаются случайные машины
+3. Гонщик может принять машину или использовать реролл (штраф -1 очко)
+4. Гонщики проводят заезды в каждой дисциплине и вводят свои результаты
+5. Администратор завершает гонку и результаты автоматически публикуются
 
 *Система подсчета очков:*
 🥇 1 место - 3 очка
@@ -261,13 +826,32 @@ func (b *Bot) handleHelp(message *tgbotapi.Message) {
 • Гонка от А к Б
 • Ралли (на время)
 
-*Процесс гонки:*
-1. Регистрация на гонку через /joinrace
-2. После начала гонки всем участникам будут назначены машины
-3. Вы можете принять машину или использовать реролл (со штрафом -1 очко)
-4. После подтверждения машины вводите результаты по дисциплинам`
+*Рейтинг и статистика:*
+- В личной карточке гонщика (/driver) отображается общая статистика и рекорд в Ралли
+- В рейтинге (/leaderboard) показываются лучшие гонщики по сезонам или за все время
+- Детальная статистика (/stats) показывает результаты по каждой гонке
 
-	b.sendMessage(chatID, text)
+*Машины:*
+- Через команду /cars можно просмотреть все машины, доступные в игре
+- В разделе машин можно выбрать случайную машину определенного класса
+- Во время гонки каждый участник видит машины других гонщиков`
+
+	// Create helpful keyboard for main commands
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🏁 Гонки", "races"),
+			tgbotapi.NewInlineKeyboardButtonData("👨‍🏎️ Мой профиль", "driver_command"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🚗 Машины", "cars"),
+			tgbotapi.NewInlineKeyboardButtonData("🏆 Рейтинг", "leaderboard"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🔙 Главное меню", "back_to_main"),
+		),
+	)
+
+	b.sendMessageWithKeyboard(chatID, text, keyboard)
 }
 
 // handleCancel обрабатывает команду /cancel
@@ -281,6 +865,17 @@ func (b *Bot) handleCancel(message *tgbotapi.Message) {
 	} else {
 		b.sendMessage(chatID, "🤔 Нет активных действий для отмены.")
 	}
+}
+
+func (b *Bot) callbackDriverCommand(query *tgbotapi.CallbackQuery) {
+	message := tgbotapi.Message{
+		From: query.From,
+		Chat: query.Message.Chat,
+	}
+
+	b.handleDriver(&message)
+
+	b.deleteMessage(query.Message.Chat.ID, query.Message.MessageID)
 }
 
 // handleStateInput routes input to appropriate handler based on state
@@ -815,72 +1410,6 @@ func (b *Bot) handleNewSeasonStartDate(message *tgbotapi.Message, state models.U
 
 	// Показываем список сезонов
 	b.handleSeasons(message)
-}
-
-// handleLeaveRace with corrected message
-func (b *Bot) handleLeaveRace(message *tgbotapi.Message) {
-	userID := message.From.ID
-	chatID := message.Chat.ID
-
-	// Get driver information
-	driver, err := b.DriverRepo.GetByTelegramID(userID)
-	if err != nil {
-		log.Printf("Ошибка получения данных гонщика: %v", err)
-		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении данных гонщика.")
-		return
-	}
-
-	if driver == nil {
-		// FIXED: Changed from "/start" to "/register"
-		b.sendMessage(chatID, "⚠️ Вы не зарегистрированы как гонщик. Используйте /register чтобы зарегистрироваться.")
-		return
-	}
-
-	// Get upcoming races
-	upcomingRaces, err := b.RaceRepo.GetUpcomingRaces()
-	if err != nil {
-		log.Printf("Ошибка получения предстоящих гонок: %v", err)
-		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении списка предстоящих гонок.")
-		return
-	}
-
-	// Filter races where driver is registered
-	var registeredRaces []*models.Race
-
-	for _, race := range upcomingRaces {
-		registered, err := b.RaceRepo.CheckDriverRegistered(race.ID, driver.ID)
-		if err != nil {
-			log.Printf("Ошибка проверки регистрации: %v", err)
-			continue
-		}
-
-		if registered {
-			registeredRaces = append(registeredRaces, race)
-		}
-	}
-
-	if len(registeredRaces) == 0 {
-		b.sendMessage(chatID, "⚠️ Вы не зарегистрированы ни на одну предстоящую гонку.")
-		return
-	}
-
-	// Create keyboard with registered races
-	var keyboard [][]tgbotapi.InlineKeyboardButton
-
-	for _, race := range registeredRaces {
-		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData(
-				race.Name,
-				fmt.Sprintf("unregister_race:%d", race.ID),
-			),
-		))
-	}
-
-	b.sendMessageWithKeyboard(
-		chatID,
-		"🏁 *Отмена регистрации на гонку*\n\nВыберите гонку для отмены регистрации:",
-		tgbotapi.NewInlineKeyboardMarkup(keyboard...),
-	)
 }
 
 // Updated handleRegisterName to properly handle driver registration

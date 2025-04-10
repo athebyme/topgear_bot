@@ -264,60 +264,6 @@ type RaceResultWithDriver struct {
 	DriverName string
 }
 
-// GetRaceResultsWithDriverNames получает результаты гонки с именами гонщиков
-func (r *ResultRepository) GetRaceResultsWithDriverNames(raceID int) ([]*RaceResultWithDriver, error) {
-	query := `
-		SELECT rr.id, rr.race_id, rr.driver_id, rr.car_number, rr.car_name, 
-			   rr.car_photo_url, rr.results, rr.total_score, d.name 
-		FROM race_results rr
-		JOIN drivers d ON rr.driver_id = d.id
-		WHERE rr.race_id = $1
-		ORDER BY rr.total_score DESC
-	`
-
-	rows, err := r.db.Query(query, raceID)
-	if err != nil {
-		return nil, fmt.Errorf("ошибка получения результатов гонки: %v", err)
-	}
-	defer rows.Close()
-
-	var results []*RaceResultWithDriver
-
-	for rows.Next() {
-		var result RaceResultWithDriver
-		var resultsJSON string
-
-		err := rows.Scan(
-			&result.ID,
-			&result.RaceID,
-			&result.DriverID,
-			&result.CarNumber,
-			&result.CarName,
-			&result.CarPhotoURL,
-			&resultsJSON,
-			&result.TotalScore,
-			&result.DriverName,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("ошибка сканирования данных результата: %v", err)
-		}
-
-		// Десериализуем результаты из JSON
-		result.Results, err = models.DeserializeResults(resultsJSON)
-		if err != nil {
-			return nil, fmt.Errorf("ошибка десериализации результатов: %v", err)
-		}
-
-		results = append(results, &result)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("ошибка итерации по результатам: %v", err)
-	}
-
-	return results, nil
-}
-
 // CreateWithRerollPenalty creates a new race result with reroll penalty
 func (r *ResultRepository) CreateWithRerollPenalty(result *models.RaceResult) (int, error) {
 	// Serialize results to JSON
@@ -449,4 +395,58 @@ func (r *ResultRepository) ApplyRerollPenaltyToResult(tx *sql.Tx, raceID, driver
 	}
 
 	return nil
+}
+
+func (r *ResultRepository) GetRaceResultsWithDriverNames(raceID int) ([]*RaceResultWithDriver, error) {
+	query := `
+		SELECT rr.id, rr.race_id, rr.driver_id, rr.car_number, rr.car_name, 
+			   rr.car_photo_url, rr.results, rr.total_score, rr.reroll_penalty, d.name 
+		FROM race_results rr
+		JOIN drivers d ON rr.driver_id = d.id
+		WHERE rr.race_id = $1
+		ORDER BY rr.total_score DESC
+	`
+
+	rows, err := r.db.Query(query, raceID)
+	if err != nil {
+		return nil, fmt.Errorf("ошибка получения результатов гонки: %v", err)
+	}
+	defer rows.Close()
+
+	var results []*RaceResultWithDriver
+
+	for rows.Next() {
+		var result RaceResultWithDriver
+		var resultsJSON string
+
+		err := rows.Scan(
+			&result.ID,
+			&result.RaceID,
+			&result.DriverID,
+			&result.CarNumber,
+			&result.CarName,
+			&result.CarPhotoURL,
+			&resultsJSON,
+			&result.TotalScore,
+			&result.RerollPenalty,
+			&result.DriverName,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("ошибка сканирования данных результата: %v", err)
+		}
+
+		// Десериализуем результаты из JSON
+		result.Results, err = models.DeserializeResults(resultsJSON)
+		if err != nil {
+			return nil, fmt.Errorf("ошибка десериализации результатов: %v", err)
+		}
+
+		results = append(results, &result)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("ошибка итерации по результатам: %v", err)
+	}
+
+	return results, nil
 }

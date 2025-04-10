@@ -542,3 +542,234 @@ func DriverProfileKeyboard() tgbotapi.InlineKeyboardMarkup {
 		),
 	)
 }
+
+// AdminRacePanelKeyboard создает клавиатуру для админ-панели гонки
+func AdminRacePanelKeyboard(raceID int, state string) tgbotapi.InlineKeyboardMarkup {
+	var keyboard [][]tgbotapi.InlineKeyboardButton
+
+	switch state {
+	case models.RaceStateNotStarted:
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"🏁 Запустить гонку",
+				fmt.Sprintf("start_race:%d", raceID),
+			),
+		))
+
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"📨 Отправить напоминание",
+				fmt.Sprintf("admin_send_notifications:%d:reminder", raceID),
+			),
+		))
+
+	case models.RaceStateInProgress:
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"✏️ Управление результатами",
+				fmt.Sprintf("admin_edit_results_menu:%d", raceID),
+			),
+		))
+
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"👨‍🏎️ Управление участниками",
+				fmt.Sprintf("race_registrations:%d", raceID),
+			),
+		))
+
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"📨 Отправить машины",
+				fmt.Sprintf("admin_send_notifications:%d:cars", raceID),
+			),
+		))
+
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"✅ Завершить гонку",
+				fmt.Sprintf("complete_race:%d", raceID),
+			),
+		))
+
+	case models.RaceStateCompleted:
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"📨 Отправить результаты",
+				fmt.Sprintf("admin_send_notifications:%d:results", raceID),
+			),
+		))
+	}
+
+	// Общие кнопки для всех статусов
+	keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData(
+			"🔙 Назад к гонке",
+			fmt.Sprintf("race_details:%d", raceID),
+		),
+	))
+
+	return tgbotapi.NewInlineKeyboardMarkup(keyboard...)
+}
+
+// RaceDetailsKeyboard создает клавиатуру для просмотра деталей гонки
+func RaceDetailsKeyboard(raceID int, userID int64, registered bool, race *models.Race, isAdmin bool) tgbotapi.InlineKeyboardMarkup {
+	var keyboard [][]tgbotapi.InlineKeyboardButton
+
+	switch race.State {
+	case models.RaceStateNotStarted:
+		if registered {
+			keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					"❌ Отменить регистрацию",
+					fmt.Sprintf("unregister_race:%d", raceID),
+				),
+			))
+		} else {
+			keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					"✅ Зарегистрироваться",
+					fmt.Sprintf("register_race:%d", raceID),
+				),
+			))
+		}
+
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"👨‍🏎️ Участники",
+				fmt.Sprintf("race_registrations:%d", raceID),
+			),
+		))
+
+	case models.RaceStateInProgress:
+		if registered {
+			keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					"🚗 Моя машина",
+					fmt.Sprintf("my_car:%d", raceID),
+				),
+				tgbotapi.NewInlineKeyboardButtonData(
+					"➕ Добавить результат",
+					fmt.Sprintf("add_result:%d", raceID),
+				),
+			))
+		}
+
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"📊 Прогресс гонки",
+				fmt.Sprintf("race_progress:%d", raceID),
+			),
+			tgbotapi.NewInlineKeyboardButtonData(
+				"🚗 Машины участников",
+				fmt.Sprintf("view_race_cars:%d", raceID),
+			),
+		))
+
+	case models.RaceStateCompleted:
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"🏆 Результаты",
+				fmt.Sprintf("race_results:%d", raceID),
+			),
+			tgbotapi.NewInlineKeyboardButtonData(
+				"🚗 Машины участников",
+				fmt.Sprintf("view_race_cars:%d", raceID),
+			),
+		))
+	}
+
+	// Кнопки для администраторов
+	if isAdmin {
+		if race.State == models.RaceStateNotStarted {
+			keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					"🏁 Запустить гонку",
+					fmt.Sprintf("start_race:%d", raceID),
+				),
+			))
+		} else if race.State == models.RaceStateInProgress {
+			keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					"✅ Завершить гонку",
+					fmt.Sprintf("complete_race:%d", raceID),
+				),
+			))
+		}
+
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"⚙️ Панель администратора",
+				fmt.Sprintf("admin_race_panel:%d", raceID),
+			),
+		))
+	}
+
+	// Кнопка назад
+	keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData(
+			"🔙 Назад к списку гонок",
+			"races",
+		),
+	))
+
+	return tgbotapi.NewInlineKeyboardMarkup(keyboard...)
+}
+
+// RaceProgressKeyboard создает клавиатуру для просмотра прогресса гонки
+func RaceProgressKeyboard(raceID int, registered bool) tgbotapi.InlineKeyboardMarkup {
+	var keyboard [][]tgbotapi.InlineKeyboardButton
+
+	// Действия для зарегистрированных участников
+	if registered {
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"🚗 Моя машина",
+				fmt.Sprintf("my_car:%d", raceID),
+			),
+			tgbotapi.NewInlineKeyboardButtonData(
+				"➕ Добавить результат",
+				fmt.Sprintf("add_result:%d", raceID),
+			),
+		))
+	}
+
+	// Общие кнопки
+	keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData(
+			"🚗 Машины участников",
+			fmt.Sprintf("view_race_cars:%d", raceID),
+		),
+	))
+
+	keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData(
+			"🔙 Назад к гонке",
+			fmt.Sprintf("race_details:%d", raceID),
+		),
+	))
+
+	return tgbotapi.NewInlineKeyboardMarkup(keyboard...)
+}
+
+// EditResultKeyboard создает клавиатуру для редактирования результата
+func EditResultKeyboard(resultID int, raceID int) tgbotapi.InlineKeyboardMarkup {
+	return tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"✏️ Редактировать места",
+				fmt.Sprintf("admin_edit_result_places:%d", resultID),
+			),
+			tgbotapi.NewInlineKeyboardButtonData(
+				"🎲 Переключить реролл",
+				fmt.Sprintf("admin_toggle_reroll:%d", resultID),
+			),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"🔙 Назад к списку",
+				fmt.Sprintf("admin_edit_results_menu:%d", raceID),
+			),
+		),
+	)
+}

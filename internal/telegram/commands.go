@@ -30,6 +30,12 @@ func (b *Bot) registerCommandHandlers() {
 		"mycar":       b.handleMyCar,
 		"stats":       b.handleStats,
 		"leaderboard": b.handleLeaderboard,
+		// Новые команды
+		"activerace":  b.handleActiveRace,  // Информация о текущей активной гонке
+		"racestatus":  b.handleRaceStatus,  // Подробный статус гонки и участников
+		"adminrace":   b.handleAdminRace,   // Админ-панель для управления гонкой
+		"editresult":  b.handleEditResult,  // Редактирование результатов (для админов)
+		"racedetails": b.handleRaceDetails, // Детали конкретной гонки
 	}
 }
 
@@ -783,10 +789,11 @@ func (b *Bot) handleResults(message *tgbotapi.Message) {
 // handleHelp provides documentation for all commands
 func (b *Bot) handleHelp(message *tgbotapi.Message) {
 	chatID := message.Chat.ID
+	isAdmin := b.IsAdmin(message.From.ID)
 
 	text := `🏎️ *Top Gear Racing Club Бот* 🏎️
 
-*Доступные команды:*
+*Основные команды:*
 
 /start - Главное меню
 /register - Регистрация нового гонщика
@@ -799,42 +806,43 @@ func (b *Bot) handleHelp(message *tgbotapi.Message) {
 /help - Эта справка
 /cancel - Отмена текущего действия
 
-*Команды для участия в гонках:*
+*Команды для гонок:*
+/activerace - Информация о текущей активной гонке
+/racestatus - Подробный статус текущей гонки
 /joinrace - Регистрация на предстоящую гонку
 /leaverage - Отмена регистрации на гонку
-/mycar - Просмотр назначенной машины для текущей гонки
-/addresult - Добавить свой результат в текущей гонке
+/mycar - Просмотр назначенной машины для гонки
+/addresult - Добавить свой результат в гонке
+/racedetails [ID] - Подробная информация о гонке
+
+*Просмотр машин:*
+/cars - Просмотр всех машин, доступных в игре
+/carclass [класс] - Просмотр машин определенного класса`
+
+	// Добавляем админские команды, если пользователь - администратор
+	if isAdmin {
+		text += `
+
+*Команды администратора:*
+/adminrace - Панель управления текущей гонкой
+/editresult [ID] - Редактирование результатов участников
+/newrace - Создание новой гонки`
+	}
+
+	text += `
 
 *Как проходит гонка:*
-1. Гонщик регистрируется на предстоящую гонку через /joinrace или кнопку в информации о гонке
+1. Гонщик регистрируется на предстоящую гонку через /joinrace
 2. Администратор запускает гонку, и всем участникам выдаются случайные машины
 3. Гонщик может принять машину или использовать реролл (штраф -1 очко)
 4. Гонщики проводят заезды в каждой дисциплине и вводят свои результаты
-5. Администратор завершает гонку и результаты автоматически публикуются
+5. Администратор завершает гонку и публикует результаты
 
 *Система подсчета очков:*
 🥇 1 место - 3 очка
 🥈 2 место - 2 очка
 🥉 3 место - 1 очко
-⚠️ Реролл машины - штраф -1 очко
-
-*Дисциплины:*
-• Визуал
-• Драг
-• Круговая гонка (3 круга)
-• Офроад
-• Гонка от А к Б
-• Ралли (на время)
-
-*Рейтинг и статистика:*
-- В личной карточке гонщика (/driver) отображается общая статистика и рекорд в Ралли
-- В рейтинге (/leaderboard) показываются лучшие гонщики по сезонам или за все время
-- Детальная статистика (/stats) показывает результаты по каждой гонке
-
-*Машины:*
-- Через команду /cars можно просмотреть все машины, доступные в игре
-- В разделе машин можно выбрать случайную машину определенного класса
-- Во время гонки каждый участник видит машины других гонщиков`
+⚠️ Реролл машины - штраф -1 очко`
 
 	// Create helpful keyboard for main commands
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
@@ -845,6 +853,9 @@ func (b *Bot) handleHelp(message *tgbotapi.Message) {
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("🚗 Машины", "cars"),
 			tgbotapi.NewInlineKeyboardButtonData("🏆 Рейтинг", "leaderboard"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🔄 Текущая гонка", "activerace"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("🔙 Главное меню", "back_to_main"),
@@ -1435,4 +1446,471 @@ func (b *Bot) handleRegisterName(message *tgbotapi.Message, state models.UserSta
 	})
 
 	b.sendMessage(chatID, fmt.Sprintf("Отлично, %s! Теперь введите краткое описание о себе как о гонщике (или отправьте '-' чтобы пропустить):", name))
+}
+
+// handleActiveRace показывает информацию о текущей активной гонке
+func (b *Bot) handleActiveRace(message *tgbotapi.Message) {
+	userID := message.From.ID
+	chatID := message.Chat.ID
+
+	// Получаем данные гонщика
+	driver, err := b.DriverRepo.GetByTelegramID(userID)
+	if err != nil {
+		log.Printf("Ошибка получения данных гонщика: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении данных гонщика.")
+		return
+	}
+
+	if driver == nil {
+		b.sendMessage(chatID, "⚠️ Вы не зарегистрированы как гонщик. Используйте /register чтобы зарегистрироваться.")
+		return
+	}
+
+	// Получаем активную гонку
+	activeRace, err := b.RaceRepo.GetActiveRace()
+	if err != nil {
+		log.Printf("Ошибка получения активной гонки: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении информации об активной гонке.")
+		return
+	}
+
+	if activeRace == nil {
+		b.sendMessage(chatID, "ℹ️ В данный момент нет активных гонок.")
+		return
+	}
+
+	// Проверяем, зарегистрирован ли пользователь на эту гонку
+	registered, err := b.RaceRepo.CheckDriverRegistered(activeRace.ID, driver.ID)
+	if err != nil {
+		log.Printf("Ошибка проверки регистрации: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при проверке вашей регистрации.")
+		return
+	}
+
+	// Получаем данные о машине гонщика (если зарегистрирован)
+	var carInfo string
+	if registered {
+		assignment, err := b.CarRepo.GetDriverCarAssignment(activeRace.ID, driver.ID)
+		if err != nil {
+			log.Printf("Ошибка получения назначения машины: %v", err)
+		} else if assignment != nil {
+			car := assignment.Car
+			carInfo = fmt.Sprintf("\n\n*Ваша машина:*\n🚗 %s (%s)\n🔢 Номер: %d",
+				car.Name, car.Year, assignment.AssignmentNumber)
+
+			// Проверяем статус подтверждения машины
+			var confirmed bool
+			err = b.db.QueryRow(
+				"SELECT car_confirmed FROM race_registrations WHERE race_id = $1 AND driver_id = $2",
+				activeRace.ID, driver.ID,
+			).Scan(&confirmed)
+
+			if err == nil {
+				if confirmed {
+					carInfo += "\n✅ Машина подтверждена"
+				} else {
+					carInfo += "\n⚠️ Машина не подтверждена. Используйте /mycar чтобы подтвердить"
+				}
+			}
+		}
+	}
+
+	// Формируем сообщение о текущей гонке
+	text := fmt.Sprintf("🏁 *Активная гонка: %s*\n\n", activeRace.Name)
+	text += fmt.Sprintf("📅 Дата: %s\n", b.formatDate(activeRace.Date))
+	text += fmt.Sprintf("🚗 Класс: %s\n", activeRace.CarClass)
+	text += fmt.Sprintf("🏎️ Дисциплины: %s\n", strings.Join(activeRace.Disciplines, ", "))
+	text += fmt.Sprintf("🏆 Статус: %s\n", getStatusText(activeRace.State))
+
+	if registered {
+		text += "\n✅ Вы зарегистрированы на эту гонку" + carInfo
+	} else {
+		text += "\n❌ Вы не зарегистрированы на эту гонку"
+	}
+
+	// Создаем клавиатуру с действиями для гонки
+	keyboard := ActiveRaceKeyboard(activeRace.ID, registered, activeRace.State, b.IsAdmin(userID))
+	b.sendMessageWithKeyboard(chatID, text, keyboard)
+}
+
+// getStatusText возвращает текстовое описание статуса гонки
+func getStatusText(state string) string {
+	switch state {
+	case models.RaceStateNotStarted:
+		return "Регистрация участников"
+	case models.RaceStateInProgress:
+		return "Гонка идет"
+	case models.RaceStateCompleted:
+		return "Гонка завершена"
+	default:
+		return "Неизвестно"
+	}
+}
+
+// ActiveRaceKeyboard создает клавиатуру для активной гонки
+func ActiveRaceKeyboard(raceID int, registered bool, state string, isAdmin bool) tgbotapi.InlineKeyboardMarkup {
+	var keyboard [][]tgbotapi.InlineKeyboardButton
+
+	// Кнопки для обычных пользователей
+	if state == models.RaceStateNotStarted {
+		if registered {
+			keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					"❌ Отменить регистрацию",
+					fmt.Sprintf("unregister_race:%d", raceID),
+				),
+			))
+		} else {
+			keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					"✅ Зарегистрироваться",
+					fmt.Sprintf("register_race:%d", raceID),
+				),
+			))
+		}
+	}
+
+	if state == models.RaceStateInProgress && registered {
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"🚗 Моя машина",
+				fmt.Sprintf("my_car:%d", raceID),
+			),
+			tgbotapi.NewInlineKeyboardButtonData(
+				"➕ Добавить результат",
+				fmt.Sprintf("add_result:%d", raceID),
+			),
+		))
+	}
+
+	// Общие кнопки
+	keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData(
+			"📊 Статус участников",
+			fmt.Sprintf("race_progress:%d", raceID),
+		),
+		tgbotapi.NewInlineKeyboardButtonData(
+			"🚗 Машины участников",
+			fmt.Sprintf("view_race_cars:%d", raceID),
+		),
+	))
+
+	// Админские кнопки
+	if isAdmin {
+		if state == models.RaceStateNotStarted {
+			keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					"🏁 Запустить гонку",
+					fmt.Sprintf("start_race:%d", raceID),
+				),
+			))
+		} else if state == models.RaceStateInProgress {
+			keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					"✅ Завершить гонку",
+					fmt.Sprintf("complete_race:%d", raceID),
+				),
+			))
+		}
+
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"⚙️ Управление гонкой",
+				fmt.Sprintf("admin_race_panel:%d", raceID),
+			),
+		))
+	}
+
+	return tgbotapi.NewInlineKeyboardMarkup(keyboard...)
+}
+
+// handleRaceStatus показывает подробный ход гонки
+func (b *Bot) handleRaceStatus(message *tgbotapi.Message) {
+	chatID := message.Chat.ID
+
+	// Получаем активную гонку
+	activeRace, err := b.RaceRepo.GetActiveRace()
+	if err != nil {
+		log.Printf("Ошибка получения активной гонки: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении информации об активной гонке.")
+		return
+	}
+
+	if activeRace == nil {
+		b.sendMessage(chatID, "ℹ️ В данный момент нет активных гонок.")
+		return
+	}
+
+	// Показываем ход гонки
+	b.showRaceProgress(chatID, activeRace.ID)
+}
+
+// handleAdminRace предоставляет админ-панель для управления гонкой
+func (b *Bot) handleAdminRace(message *tgbotapi.Message) {
+	userID := message.From.ID
+	chatID := message.Chat.ID
+
+	// Проверяем, является ли пользователь администратором
+	if !b.IsAdmin(userID) {
+		b.sendMessage(chatID, "⛔ У вас нет прав администратора для выполнения этой команды.")
+		return
+	}
+
+	// Получаем активную гонку
+	activeRace, err := b.RaceRepo.GetActiveRace()
+	if err != nil {
+		log.Printf("Ошибка получения активной гонки: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении информации об активной гонке.")
+		return
+	}
+
+	if activeRace == nil {
+		// Если нет активной гонки, показываем список ближайших для возможности запуска
+		upcomingRaces, err := b.RaceRepo.GetUpcomingRaces()
+		if err != nil {
+			log.Printf("Ошибка получения предстоящих гонок: %v", err)
+			b.sendMessage(chatID, "⚠️ Произошла ошибка при получении предстоящих гонок.")
+			return
+		}
+
+		if len(upcomingRaces) == 0 {
+			b.sendMessage(chatID, "ℹ️ Нет активных или предстоящих гонок.\n\nИспользуйте /newrace чтобы создать новую гонку.")
+			return
+		}
+
+		// Формируем сообщение со списком предстоящих гонок
+		text := "⚙️ *Админ-панель гонок*\n\nАктивная гонка отсутствует. Выберите гонку для запуска:\n\n"
+
+		// Создаем клавиатуру для выбора гонки
+		var keyboard [][]tgbotapi.InlineKeyboardButton
+
+		for _, race := range upcomingRaces {
+			text += fmt.Sprintf("• *%s* (📅 %s)\n", race.Name, b.formatDate(race.Date))
+
+			keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					fmt.Sprintf("🏁 Запустить: %s", race.Name),
+					fmt.Sprintf("start_race:%d", race.ID),
+				),
+			))
+		}
+
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"➕ Создать новую гонку",
+				"new_race",
+			),
+		))
+
+		b.sendMessageWithKeyboard(chatID, text, tgbotapi.NewInlineKeyboardMarkup(keyboard...))
+		return
+	}
+
+	// Если есть активная гонка, показываем админ-панель
+	b.showAdminRacePanel(chatID, activeRace.ID)
+}
+
+// showAdminRacePanel показывает панель администратора для конкретной гонки
+func (b *Bot) showAdminRacePanel(chatID int64, raceID int) {
+	// Получаем информацию о гонке
+	race, err := b.RaceRepo.GetByID(raceID)
+	if err != nil {
+		log.Printf("Ошибка получения информации о гонке: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении информации о гонке.")
+		return
+	}
+
+	if race == nil {
+		b.sendMessage(chatID, "⚠️ Гонка не найдена.")
+		return
+	}
+
+	// Получаем количество зарегистрированных гонщиков
+	registrations, err := b.RaceRepo.GetRegisteredDrivers(raceID)
+	if err != nil {
+		log.Printf("Ошибка получения регистраций: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении списка участников.")
+		return
+	}
+
+	// Получаем количество поданных результатов
+	resultsCount, err := b.ResultRepo.GetResultCountByRaceID(raceID)
+	if err != nil {
+		log.Printf("Ошибка получения количества результатов: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении количества результатов.")
+		return
+	}
+
+	// Формируем сообщение с админ-панелью
+	text := fmt.Sprintf("⚙️ *Админ-панель гонки: %s*\n\n", race.Name)
+	text += fmt.Sprintf("📅 Дата: %s\n", b.formatDate(race.Date))
+	text += fmt.Sprintf("🚗 Класс: %s\n", race.CarClass)
+	text += fmt.Sprintf("🏎️ Дисциплины: %s\n", strings.Join(race.Disciplines, ", "))
+	text += fmt.Sprintf("🏆 Статус: %s\n\n", getStatusText(race.State))
+
+	text += fmt.Sprintf("👨‍🏎️ Участников: %d\n", len(registrations))
+	text += fmt.Sprintf("📊 Подано результатов: %d\n\n", resultsCount)
+
+	// Добавляем статусы гонщиков
+	text += "*Статусы участников:*\n"
+	for i, reg := range registrations {
+		statusText := "⏳ ожидает"
+		if reg.CarConfirmed {
+			statusText = "✅ подтвердил"
+		}
+		if reg.RerollUsed {
+			statusText += ", 🎲 реролл"
+		}
+
+		text += fmt.Sprintf("%d. %s - %s\n", i+1, reg.DriverName, statusText)
+	}
+
+	// Создаем клавиатуру для управления гонкой
+	var keyboard [][]tgbotapi.InlineKeyboardButton
+
+	// Кнопки в зависимости от состояния гонки
+	switch race.State {
+	case models.RaceStateNotStarted:
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"🏁 Запустить гонку",
+				fmt.Sprintf("start_race:%d", raceID),
+			),
+		))
+	case models.RaceStateInProgress:
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"👨‍🏎️ Участники",
+				fmt.Sprintf("race_registrations:%d", raceID),
+			),
+			tgbotapi.NewInlineKeyboardButtonData(
+				"🚗 Машины",
+				fmt.Sprintf("view_race_cars:%d", raceID),
+			),
+		))
+
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"✏️ Редактировать результаты",
+				fmt.Sprintf("admin_edit_results_menu:%d", raceID),
+			),
+		))
+
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"✅ Завершить гонку",
+				fmt.Sprintf("complete_race:%d", raceID),
+			),
+		))
+	}
+
+	keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData(
+			"🔙 Назад к гонке",
+			fmt.Sprintf("race_details:%d", raceID),
+		),
+	))
+
+	b.sendMessageWithKeyboard(chatID, text, tgbotapi.NewInlineKeyboardMarkup(keyboard...))
+}
+
+// handleEditResult позволяет администратору редактировать результаты гонщиков
+func (b *Bot) handleEditResult(message *tgbotapi.Message) {
+	userID := message.From.ID
+	chatID := message.Chat.ID
+
+	// Проверяем, является ли пользователь администратором
+	if !b.IsAdmin(userID) {
+		b.sendMessage(chatID, "⛔ У вас нет прав администратора для выполнения этой команды.")
+		return
+	}
+
+	// Получаем аргументы команды
+	args := strings.Fields(message.Text)
+	if len(args) < 2 {
+		b.sendMessage(chatID, "⚠️ Пожалуйста, укажите ID гонки. Пример: /editresult 42")
+		return
+	}
+
+	// Парсим ID гонки
+	raceID, err := strconv.Atoi(args[1])
+	if err != nil {
+		b.sendMessage(chatID, "⚠️ Некорректный ID гонки. Пожалуйста, укажите число.")
+		return
+	}
+
+	// Получаем информацию о гонке
+	race, err := b.RaceRepo.GetByID(raceID)
+	if err != nil {
+		log.Printf("Ошибка получения информации о гонке: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении информации о гонке.")
+		return
+	}
+
+	if race == nil {
+		b.sendMessage(chatID, "⚠️ Гонка с указанным ID не найдена.")
+		return
+	}
+
+	// Получаем результаты гонки
+	results, err := b.ResultRepo.GetRaceResultsWithDriverNames(raceID)
+	if err != nil {
+		log.Printf("Ошибка получения результатов: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении результатов гонки.")
+		return
+	}
+
+	if len(results) == 0 {
+		b.sendMessage(chatID, "ℹ️ Для этой гонки еще нет результатов.")
+		return
+	}
+
+	// Формируем сообщение с результатами для редактирования
+	text := fmt.Sprintf("✏️ *Редактирование результатов гонки: %s*\n\n", race.Name)
+	text += "Выберите гонщика для редактирования результатов:\n\n"
+
+	// Создаем клавиатуру для выбора гонщика
+	var keyboard [][]tgbotapi.InlineKeyboardButton
+
+	for _, result := range results {
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				fmt.Sprintf("%s - %d очков", result.DriverName, result.TotalScore),
+				fmt.Sprintf("admin_edit_result:%d", result.ID),
+			),
+		))
+	}
+
+	keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData(
+			"🔙 Назад к гонке",
+			fmt.Sprintf("race_results:%d", raceID),
+		),
+	))
+
+	b.sendMessageWithKeyboard(chatID, text, tgbotapi.NewInlineKeyboardMarkup(keyboard...))
+}
+
+// handleRaceDetails показывает детальную информацию о гонке
+func (b *Bot) handleRaceDetails(message *tgbotapi.Message) {
+	chatID := message.Chat.ID
+	userID := message.From.ID
+
+	// Получаем аргументы команды
+	args := strings.Fields(message.Text)
+	if len(args) < 2 {
+		// Если ID не указан, пытаемся показать активную гонку
+		b.handleActiveRace(message)
+		return
+	}
+
+	// Парсим ID гонки
+	raceID, err := strconv.Atoi(args[1])
+	if err != nil {
+		b.sendMessage(chatID, "⚠️ Некорректный ID гонки. Пожалуйста, укажите число.")
+		return
+	}
+
+	// Показываем информацию о гонке
+	b.showRaceDetails(chatID, raceID, userID)
 }

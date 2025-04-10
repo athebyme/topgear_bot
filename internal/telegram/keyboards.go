@@ -49,28 +49,6 @@ func DriversKeyboard(drivers []*models.Driver) tgbotapi.InlineKeyboardMarkup {
 	return tgbotapi.NewInlineKeyboardMarkup(keyboard...)
 }
 
-// DriverProfileKeyboard создает клавиатуру для профиля гонщика
-func DriverProfileKeyboard() tgbotapi.InlineKeyboardMarkup {
-	return tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData(
-				"✏️ Изменить имя",
-				"edit_driver_name",
-			),
-			tgbotapi.NewInlineKeyboardButtonData(
-				"📝 Изменить описание",
-				"edit_driver_desc",
-			),
-		),
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData(
-				"🖼️ Изменить фото",
-				"edit_driver_photo",
-			),
-		),
-	)
-}
-
 // RaceResultsKeyboard создает клавиатуру для просмотра результатов гонки
 func RaceResultsKeyboard(raceID int, completed bool, isAdmin bool) tgbotapi.InlineKeyboardMarkup {
 	var keyboard [][]tgbotapi.InlineKeyboardButton
@@ -330,7 +308,7 @@ func RacesKeyboard(races []*models.Race, isAdmin bool) tgbotapi.InlineKeyboardMa
 			keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
 				tgbotapi.NewInlineKeyboardButtonData(
 					fmt.Sprintf("🏎️ %s", race.Name),
-					fmt.Sprintf("race_details:%d", race.ID), // Changed to race_details
+					fmt.Sprintf("race_details:%d", race.ID),
 				),
 			))
 		}
@@ -346,7 +324,7 @@ func RacesKeyboard(races []*models.Race, isAdmin bool) tgbotapi.InlineKeyboardMa
 			keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
 				tgbotapi.NewInlineKeyboardButtonData(
 					fmt.Sprintf("⏳ %s", race.Name),
-					fmt.Sprintf("race_details:%d", race.ID), // Changed to race_details
+					fmt.Sprintf("race_details:%d", race.ID),
 				),
 			))
 		}
@@ -362,7 +340,7 @@ func RacesKeyboard(races []*models.Race, isAdmin bool) tgbotapi.InlineKeyboardMa
 			keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
 				tgbotapi.NewInlineKeyboardButtonData(
 					fmt.Sprintf("✅ %s", race.Name),
-					fmt.Sprintf("race_details:%d", race.ID), // Changed to race_details for consistency
+					fmt.Sprintf("race_details:%d", race.ID),
 				),
 			))
 		}
@@ -378,11 +356,11 @@ func RacesKeyboard(races []*models.Race, isAdmin bool) tgbotapi.InlineKeyboardMa
 		))
 	}
 
-	// Add back button
+	// Изменено: Используем back_to_main вместо seasons для возврата в главное меню
 	keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
 		tgbotapi.NewInlineKeyboardButtonData(
-			"🔙 Назад к сезонам",
-			"seasons",
+			"🔙 Назад в главное меню",
+			"back_to_main",
 		),
 	))
 
@@ -535,4 +513,32 @@ func DriverRaceOptionsKeyboard(raceID int, registered bool, state string) tgbota
 	))
 
 	return tgbotapi.NewInlineKeyboardMarkup(keyboard...)
+}
+
+func DriverProfileKeyboard() tgbotapi.InlineKeyboardMarkup {
+	return tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"✏️ Изменить имя",
+				"edit_driver_name",
+			),
+			tgbotapi.NewInlineKeyboardButtonData(
+				"📝 Изменить описание",
+				"edit_driver_desc",
+			),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"🖼️ Изменить фото",
+				"edit_driver_photo",
+			),
+		),
+		// Добавлена кнопка "Назад в главное меню"
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"🔙 Назад в главное меню",
+				"back_to_main",
+			),
+		),
+	)
 }

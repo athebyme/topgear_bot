@@ -51,6 +51,7 @@ func (b *Bot) registerCallbackHandlers() {
 		"stats_season":        b.callbackStatsForSeason,
 		"race_progress":       b.callbackRaceProgress,
 		"admin_confirm_car":   b.callbackAdminConfirmCar,
+		"leaderboard":         b.callbackLeaderboard, // Добавлен обработчик для лидерборда
 	}
 
 	b.CallbackHandlers["register_race"] = b.callbackRegisterRace
@@ -1754,4 +1755,102 @@ func (b *Bot) callbackAdminToggleReroll(query *tgbotapi.CallbackQuery) {
 		From:    query.From,
 		Message: query.Message,
 	})
+}
+
+func (b *Bot) callbackRegisterRace(query *tgbotapi.CallbackQuery) {
+	userID := query.From.ID
+	chatID := query.Message.Chat.ID
+	messageID := query.Message.MessageID
+
+	// Отладочная информация
+	log.Printf("Обработка команды register_race: userID=%d, chatID=%d", userID, chatID)
+
+	// Разбираем ID гонки из данных запроса
+	parts := strings.Split(query.Data, ":")
+	if len(parts) < 2 {
+		b.answerCallbackQuery(query.ID, "⚠️ Неверный формат запроса", true)
+		log.Printf("Ошибка: неверный формат данных колбэка: %s", query.Data)
+		return
+	}
+
+	raceID, err := strconv.Atoi(parts[1])
+	if err != nil {
+		b.answerCallbackQuery(query.ID, "⚠️ Неверный ID гонки", true)
+		log.Printf("Ошибка: не удалось преобразовать ID гонки: %v", err)
+		return
+	}
+
+	log.Printf("Получен ID гонки: %d", raceID)
+
+	// Получаем данные гонщика
+	driver, err := b.DriverRepo.GetByTelegramID(userID)
+	if err != nil {
+		log.Printf("Ошибка получения данных гонщика: %v", err)
+		b.answerCallbackQuery(query.ID, "⚠️ Произошла ошибка при получении данных гонщика", true)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении данных гонщика. Пожалуйста, попробуйте снова.")
+		return
+	}
+
+	if driver == nil {
+		b.answerCallbackQuery(query.ID, "⚠️ Вы не зарегистрированы как гонщик", true)
+		b.sendMessage(chatID, "⚠️ Вы не зарегистрированы как гонщик. Используйте /register чтобы зарегистрироваться.")
+		return
+	}
+
+	// Получаем информацию о гонке
+	race, err := b.RaceRepo.GetByID(raceID)
+	if err != nil {
+		log.Printf("Ошибка получения информации о гонке: %v", err)
+		b.answerCallbackQuery(query.ID, "⚠️ Произошла ошибка при получении информации о гонке", true)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении информации о гонке. Пожалуйста, попробуйте снова.")
+		return
+	}
+
+	if race == nil {
+		b.answerCallbackQuery(query.ID, "⚠️ Гонка не найдена", true)
+		b.sendMessage(chatID, "⚠️ Гонка не найдена. Пожалуйста, выберите другую гонку.")
+		return
+	}
+
+	// Проверяем, открыта ли еще регистрация на гонку
+	//if race.State != models.RaceStateNotStarted {
+	//	b.answerCallbackQuery(query.ID, "⚠️ Регистрация на эту гонку уже закрыта", true)
+	//	b.sendMessage(chatID, "⚠️ Регистрация на эту гонку уже закрыта.")
+	//	return
+	//}
+
+	// Проверяем, не зарегистрирован ли уже гонщик
+	registered, err := b.RaceRepo.CheckDriverRegistered(raceID, driver.ID)
+	if err != nil {
+		log.Printf("Ошибка проверки регистрации: %v", err)
+		b.answerCallbackQuery(query.ID, "⚠️ Произошла ошибка при проверке регистрации", true)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при проверке регистрации. Пожалуйста, попробуйте снова.")
+		return
+	}
+
+	if registered {
+		b.answerCallbackQuery(query.ID, "⚠️ Вы уже зарегистрированы на эту гонку", true)
+		b.sendMessage(chatID, "⚠️ Вы уже зарегистрированы на эту гонку.")
+		return
+	}
+
+	// Регистрируем гонщика на гонку
+	err = b.RaceRepo.RegisterDriver(raceID, driver.ID)
+	if err != nil {
+		log.Printf("Ошибка регистрации на гонку: %v", err)
+		b.answerCallbackQuery(query.ID, "⚠️ Произошла ошибка при регистрации", true)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при регистрации на гонку. Пожалуйста, попробуйте снова.")
+		return
+	}
+
+	// Успешная регистрация - отправляем уведомление
+	b.answerCallbackQuery(query.ID, "✅ Вы успешно зарегистрированы на гонку!", false)
+	b.sendMessage(chatID, fmt.Sprintf("✅ Вы успешно зарегистрированы на гонку '%s'!", race.Name))
+
+	// Показываем обновленные детали гонки
+	// Сначала удаляем исходное сообщение
+	b.deleteMessage(chatID, messageID)
+
+	// Затем показываем детали гонки
+	b.showRaceDetails(chatID, raceID, userID)
 }

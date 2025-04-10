@@ -306,6 +306,19 @@ func (b *Bot) callbackViewRaceCars(query *tgbotapi.CallbackQuery) {
 	b.deleteMessage(chatID, query.Message.MessageID)
 }
 
+// registerRaceFlowCallbackHandlers registers callbacks for race flow
+func (b *Bot) registerRaceFlowCallbackHandlers() {
+	b.CallbackHandlers["register_race"] = b.callbackRegisterRace
+	b.CallbackHandlers["unregister_race"] = b.callbackUnregisterRace
+	b.CallbackHandlers["start_race"] = b.callbackStartRace
+	b.CallbackHandlers["confirm_car"] = b.callbackConfirmCar
+	b.CallbackHandlers["reroll_car"] = b.callbackRerollCar
+	b.CallbackHandlers["race_registrations"] = b.callbackRaceRegistrations
+	b.CallbackHandlers["race_start_confirm"] = b.callbackRaceStartConfirm
+	b.CallbackHandlers["complete_race_confirm"] = b.callbackCompleteRaceConfirm
+	b.CallbackHandlers["race_details"] = b.callbackRaceDetails
+}
+
 // showRaceCarAssignments показывает назначения машин для гонки
 func (b *Bot) showRaceCarAssignments(chatID int64, raceID int, userID int64) {
 	// Получаем информацию о гонке
@@ -340,7 +353,8 @@ func (b *Bot) showRaceCarAssignments(chatID int64, raceID int, userID int64) {
 		for _, assignment := range assignments {
 			text += fmt.Sprintf("*%s*\n", assignment.DriverName)
 			text += fmt.Sprintf("🔢 Номер: %d\n", assignment.AssignmentNumber)
-			text += fmt.Sprintf("🚗 Машина: %s (%d)\n", assignment.Car.Name, assignment.Car.Year)
+			// Исправлено: используем %s вместо %d для Car.Year, который хранится как строка
+			text += fmt.Sprintf("🚗 Машина: %s (%s)\n", assignment.Car.Name, assignment.Car.Year)
 			text += fmt.Sprintf("⭐ Редкость: %s\n\n", assignment.Car.Rarity)
 		}
 	}
@@ -385,108 +399,6 @@ func (b *Bot) showRaceCarAssignments(chatID int64, raceID int, userID int64) {
 
 	// Отправляем сообщение с клавиатурой
 	b.sendMessageWithKeyboard(chatID, text, tgbotapi.NewInlineKeyboardMarkup(keyboard...))
-}
-
-// registerRaceFlowCallbackHandlers registers callbacks for race flow
-func (b *Bot) registerRaceFlowCallbackHandlers() {
-	b.CallbackHandlers["register_race"] = b.callbackRegisterRace
-	b.CallbackHandlers["unregister_race"] = b.callbackUnregisterRace
-	b.CallbackHandlers["start_race"] = b.callbackStartRace
-	b.CallbackHandlers["confirm_car"] = b.callbackConfirmCar
-	b.CallbackHandlers["reroll_car"] = b.callbackRerollCar
-	b.CallbackHandlers["race_registrations"] = b.callbackRaceRegistrations
-	b.CallbackHandlers["race_start_confirm"] = b.callbackRaceStartConfirm
-	b.CallbackHandlers["complete_race_confirm"] = b.callbackCompleteRaceConfirm
-	b.CallbackHandlers["race_details"] = b.callbackRaceDetails
-}
-
-// callbackRegisterRace handles registration for a race
-func (b *Bot) callbackRegisterRace(query *tgbotapi.CallbackQuery) {
-	userID := query.From.ID
-	chatID := query.Message.Chat.ID
-	messageID := query.Message.MessageID
-
-	// Отладочная информация
-	log.Printf("Обработка команды register_race: userID=%d, chatID=%d", userID, chatID)
-
-	// Разбираем ID гонки из данных запроса
-	parts := strings.Split(query.Data, ":")
-	if len(parts) < 2 {
-		b.answerCallbackQuery(query.ID, "⚠️ Неверный формат запроса", true)
-		log.Printf("Ошибка: неверный формат данных колбэка: %s", query.Data)
-		return
-	}
-
-	raceID, err := strconv.Atoi(parts[1])
-	if err != nil {
-		b.answerCallbackQuery(query.ID, "⚠️ Неверный ID гонки", true)
-		log.Printf("Ошибка: не удалось преобразовать ID гонки: %v", err)
-		return
-	}
-
-	log.Printf("Получен ID гонки: %d", raceID)
-
-	// Получаем данные гонщика
-	driver, err := b.DriverRepo.GetByTelegramID(userID)
-	if err != nil {
-		log.Printf("Ошибка получения данных гонщика: %v", err)
-		b.answerCallbackQuery(query.ID, "⚠️ Произошла ошибка при получении данных гонщика", true)
-		return
-	}
-
-	if driver == nil {
-		b.answerCallbackQuery(query.ID, "⚠️ Вы не зарегистрированы как гонщик", true)
-		return
-	}
-
-	// Получаем информацию о гонке
-	race, err := b.RaceRepo.GetByID(raceID)
-	if err != nil {
-		log.Printf("Ошибка получения информации о гонке: %v", err)
-		b.answerCallbackQuery(query.ID, "⚠️ Произошла ошибка при получении информации о гонке", true)
-		return
-	}
-
-	if race == nil {
-		b.answerCallbackQuery(query.ID, "⚠️ Гонка не найдена", true)
-		return
-	}
-
-	// Проверяем, открыта ли еще регистрация на гонку
-	if race.State != models.RaceStateNotStarted {
-		b.answerCallbackQuery(query.ID, "⚠️ Регистрация на эту гонку уже закрыта", true)
-		return
-	}
-
-	// Проверяем, не зарегистрирован ли уже гонщик
-	registered, err := b.RaceRepo.CheckDriverRegistered(raceID, driver.ID)
-	if err != nil {
-		log.Printf("Ошибка проверки регистрации: %v", err)
-		b.answerCallbackQuery(query.ID, "⚠️ Произошла ошибка при проверке регистрации", true)
-		return
-	}
-
-	if registered {
-		b.answerCallbackQuery(query.ID, "⚠️ Вы уже зарегистрированы на эту гонку", true)
-		return
-	}
-
-	// Регистрируем гонщика на гонку
-	err = b.RaceRepo.RegisterDriver(raceID, driver.ID)
-	if err != nil {
-		log.Printf("Ошибка регистрации на гонку: %v", err)
-		b.answerCallbackQuery(query.ID, "⚠️ Произошла ошибка при регистрации", true)
-		return
-	}
-
-	b.answerCallbackQuery(query.ID, "✅ Вы успешно зарегистрированы на гонку!", false)
-	b.sendMessage(chatID, fmt.Sprintf("✅ Вы успешно зарегистрированы на гонку '%s'!", race.Name))
-
-	// Показываем обновленные детали гонки
-	b.showRaceDetails(chatID, raceID, userID)
-
-	// Удаляем исходное сообщение
-	b.deleteMessage(chatID, messageID)
 }
 
 func (b *Bot) callbackRaceDetails(query *tgbotapi.CallbackQuery) {
@@ -731,10 +643,10 @@ func (b *Bot) callbackRaceStartConfirm(query *tgbotapi.CallbackQuery) {
 	}
 
 	// Check if race is not started yet
-	if race.State != models.RaceStateNotStarted {
-		b.answerCallbackQuery(query.ID, "⚠️ Гонка уже запущена или завершена", true)
-		return
-	}
+	//if race.State != models.RaceStateNotStarted {
+	//	b.answerCallbackQuery(query.ID, "⚠️ Гонка уже запущена или завершена", true)
+	//	return
+	//}
 
 	// Start a database transaction
 	tx, err := b.db.Begin()

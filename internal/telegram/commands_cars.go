@@ -9,11 +9,8 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-// Новые команды для работы с машинами
-
 // registerCarCommandHandlers регистрирует обработчики команд для работы с машинами
 func (b *Bot) registerCarCommandHandlers() {
-	// Добавляем новые команды в основной обработчик
 	b.CommandHandlers["cars"] = b.handleCars
 	b.CommandHandlers["carclass"] = b.handleCarClass
 }
@@ -232,9 +229,8 @@ func (b *Bot) assignRandomCarsForRace(raceID int, carClass string) error {
 
 // registerRaceFlowCommandHandlers registers handlers for race flow commands
 func (b *Bot) registerRaceFlowCommandHandlers() {
-	// Add to existing CommandHandlers
-	b.CommandHandlers["joinrace"] = b.handleJoinRace // New command for race registration
-	b.CommandHandlers["leaverage"] = b.handleUnregisterFromRace
+	b.CommandHandlers["joinrace"] = b.handleJoinRace
+	b.CommandHandlers["leaverace"] = b.handleUnregisterFromRace
 	b.CommandHandlers["register"] = b.handleRegisterForRace
 	b.CommandHandlers["unregister"] = b.handleUnregisterFromRace
 	b.CommandHandlers["mycar"] = b.handleMyCar

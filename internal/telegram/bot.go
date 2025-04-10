@@ -75,14 +75,24 @@ func New(cfg *config.Config, db *sql.DB) (*Bot, error) {
 		db:               db,
 	}
 
-	// Register all command and callback handlers
 	bot.registerCommandHandlers()
 	bot.registerCarCommandHandlers()
 	bot.registerCallbackHandlers()
 
-	// Register new race flow handlers
 	bot.registerRaceFlowCommandHandlers()
 	bot.registerRaceFlowCallbackHandlers()
+
+	// Проверим, что колбэк для регистрации гонки зарегистрирован
+	if _, exists := bot.CallbackHandlers["register_race"]; !exists {
+		log.Printf("ВНИМАНИЕ: Обработчик register_race не зарегистрирован!")
+		bot.CallbackHandlers["register_race"] = bot.callbackRegisterRace
+	}
+
+	// Проверим, что колбэк для лидерборда зарегистрирован
+	if _, exists := bot.CallbackHandlers["leaderboard"]; !exists {
+		log.Printf("ВНИМАНИЕ: Обработчик leaderboard не зарегистрирован!")
+		bot.CallbackHandlers["leaderboard"] = bot.callbackLeaderboard
+	}
 
 	return bot, nil
 }

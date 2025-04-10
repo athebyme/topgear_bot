@@ -82,11 +82,43 @@ func (d *Database) BeginTx() (*sql.Tx, error) {
 
 // Migrate выполняет миграции базы данных
 func (d *Database) Migrate() error {
-	// Применяем миграции из файла migrations.go
-	for _, query := range migrations {
-		_, err := d.db.Exec(query)
+	_, err := d.db.Exec(`
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version VARCHAR(255) PRIMARY KEY,
+            applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    `)
+	if err != nil {
+		return fmt.Errorf("ошибка создания таблицы миграций: %v", err)
+	}
+
+	// Проверяем и применяем каждую миграцию
+	for i, query := range migrations {
+		// Создаем версию миграции на основе её порядкового номера
+		version := fmt.Sprintf("migration_%04d", i+1)
+
+		// Проверяем, была ли миграция уже применена
+		var exists bool
+		err := d.db.QueryRow("SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = $1)", version).Scan(&exists)
 		if err != nil {
-			return fmt.Errorf("ошибка выполнения миграции: %v", err)
+			return fmt.Errorf("ошибка проверки миграции %s: %v", version, err)
+		}
+
+		// Если миграция уже применена, пропускаем её
+		if exists {
+			continue
+		}
+
+		// Применяем миграцию
+		_, err = d.db.Exec(query)
+		if err != nil {
+			return fmt.Errorf("ошибка выполнения миграции %s: %v", version, err)
+		}
+
+		// Записываем информацию о примененной миграции
+		_, err = d.db.Exec("INSERT INTO schema_migrations (version) VALUES ($1)", version)
+		if err != nil {
+			return fmt.Errorf("ошибка записи информации о миграции %s: %v", version, err)
 		}
 	}
 

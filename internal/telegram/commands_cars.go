@@ -9,15 +9,14 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-// registerCarCommandHandlers регистрирует обработчики команд для работы с машинами
 func (b *Bot) registerCarCommandHandlers() {
 	b.CommandHandlers["cars"] = b.handleCars
 	b.CommandHandlers["carclass"] = b.handleCarClass
 	b.CommandHandlers["joinrace"] = b.handleJoinRace
 	b.CommandHandlers["leaverace"] = b.handleUnregisterFromRace
-	b.CommandHandlers["register"] = b.handleRegisterForRace
 	b.CommandHandlers["unregister"] = b.handleUnregisterFromRace
 	b.CommandHandlers["mycar"] = b.handleMyCar
+	b.CommandHandlers["raceregister"] = b.handleRegisterForRace
 }
 
 // handleCars обрабатывает команду /cars

@@ -743,12 +743,21 @@ func (b *Bot) handleNewRace(message *tgbotapi.Message) {
 		return
 	}
 
-	// Создаем состояние для пользователя
-	b.StateManager.SetState(userID, "new_race_name", map[string]interface{}{
-		"season_id": activeSeason.ID,
-	})
+	// Initialize context with message tracking
+	raceContext := map[string]interface{}{
+		"season_id":  activeSeason.ID,
+		"messageIDs": []int{}, // Initialize empty array to track messages
+	}
 
-	b.sendMessage(chatID, fmt.Sprintf("🏁 Создание новой гонки для *%s*\n\nВведите название гонки:", activeSeason.Name))
+	// Создаем состояние для пользователя
+	b.StateManager.SetState(userID, "new_race_name", raceContext)
+
+	// Send and track message
+	msg := b.sendMessage(chatID, fmt.Sprintf("🏁 Создание новой гонки для *%s*\n\nВведите название гонки:", activeSeason.Name))
+	b.addMessageIDToState(userID, msg.MessageID)
+
+	// Delete the original command message
+	b.deleteMessage(chatID, message.MessageID)
 }
 
 // handleResults обрабатывает команду /results
@@ -927,31 +936,41 @@ func (b *Bot) handleStateInput(message *tgbotapi.Message, state models.UserState
 	}
 }
 
-// Обработчики состояний пользователя
-
-// handleRegisterDescription обрабатывает ввод описания при регистрации
 func (b *Bot) handleRegisterDescription(message *tgbotapi.Message, state models.UserState) {
 	userID := message.From.ID
 	chatID := message.Chat.ID
+
+	// Delete user message to keep chat clean
+	b.deleteMessage(chatID, message.MessageID)
 
 	description := message.Text
 	if description == "-" {
 		description = ""
 	}
 
-	// Сохраняем описание в контексте и запрашиваем фото
-	b.StateManager.SetState(userID, "register_photo", map[string]interface{}{
-		"name":        state.ContextData["name"],
-		"description": description,
-	})
+	// Continue registration flow - keep all tracked messages
+	newContext := state.ContextData
+	newContext["description"] = description
 
-	b.sendMessage(chatID, "Отлично! Теперь отправьте фото для вашей карточки гонщика (или отправьте '-' чтобы пропустить):")
+	// Сохраняем описание в контексте и запрашиваем фото
+	b.StateManager.SetState(userID, "register_photo", newContext)
+
+	msg := b.sendMessage(chatID, "Отлично! Теперь отправьте фото для вашей карточки гонщика (или отправьте '-' чтобы пропустить):")
+	// Track this message to delete it later
+	b.addMessageIDToState(userID, msg.MessageID)
 }
 
-// handleRegisterPhoto обрабатывает отправку фото при регистрации
+// Fifth fix: Update handleRegisterPhoto to clean up all messages on success
+// In internal/telegram/handlers.go
+
 func (b *Bot) handleRegisterPhoto(message *tgbotapi.Message, state models.UserState) {
 	userID := message.From.ID
 	chatID := message.Chat.ID
+
+	// Delete user message if it's text (can't delete photos immediately)
+	if message.Text != "" {
+		b.deleteMessage(chatID, message.MessageID)
+	}
 
 	var photoURL string
 
@@ -962,8 +981,16 @@ func (b *Bot) handleRegisterPhoto(message *tgbotapi.Message, state models.UserSt
 		photo := message.Photo[len(message.Photo)-1]
 		photoURL = photo.FileID
 	} else {
-		b.sendMessage(chatID, "⚠️ Пожалуйста, отправьте фото или '-' для пропуска.")
+		msg := b.sendMessage(chatID, "⚠️ Пожалуйста, отправьте фото или '-' для пропуска.")
+		// Track this error message
+		b.addMessageIDToState(userID, msg.MessageID)
 		return
+	}
+
+	// Get tracked message IDs to delete
+	messageIDs, ok := state.ContextData["messageIDs"].([]int)
+	if !ok {
+		messageIDs = []int{}
 	}
 
 	// Создаем нового гонщика
@@ -978,8 +1005,14 @@ func (b *Bot) handleRegisterPhoto(message *tgbotapi.Message, state models.UserSt
 	_, err := b.DriverRepo.Create(driver)
 	if err != nil {
 		log.Printf("Ошибка сохранения гонщика: %v", err)
-		b.sendMessage(chatID, "⚠️ Произошла ошибка при регистрации. Пожалуйста, попробуйте еще раз.")
+		msg := b.sendMessage(chatID, "⚠️ Произошла ошибка при регистрации. Пожалуйста, попробуйте еще раз.")
+		b.addMessageIDToState(userID, msg.MessageID)
 		return
+	}
+
+	// Clean up all tracked messages now that registration succeeded
+	for _, msgID := range messageIDs {
+		b.deleteMessage(chatID, msgID)
 	}
 
 	// Очищаем состояние
@@ -991,75 +1024,90 @@ func (b *Bot) handleRegisterPhoto(message *tgbotapi.Message, state models.UserSt
 	b.handleStart(message)
 }
 
-// handleNewRaceName обрабатывает ввод названия гонки
+// Second update handleNewRaceName to track messages
 func (b *Bot) handleNewRaceName(message *tgbotapi.Message, state models.UserState) {
 	userID := message.From.ID
 	chatID := message.Chat.ID
 
+	// Delete user input message
+	b.deleteMessage(chatID, message.MessageID)
+
 	// Проверяем валидность названия
 	name := strings.TrimSpace(message.Text)
 	if len(name) < 3 || len(name) > 50 {
-		b.sendMessage(chatID, "⚠️ Название должно содержать от 3 до 50 символов. Пожалуйста, введите корректное название:")
+		msg := b.sendMessage(chatID, "⚠️ Название должно содержать от 3 до 50 символов. Пожалуйста, введите корректное название:")
+		b.addMessageIDToState(userID, msg.MessageID)
 		return
 	}
 
-	// Сохраняем название в контексте и запрашиваем дату
-	b.StateManager.SetState(userID, "new_race_date", map[string]interface{}{
-		"season_id": state.ContextData["season_id"],
-		"name":      name,
-	})
+	// Copy existing context and add new data
+	newContext := state.ContextData
+	newContext["name"] = name
 
-	b.sendMessage(chatID, "Введите дату гонки в формате ДД.ММ.ГГГГ:")
+	// Сохраняем название в контексте и запрашиваем дату
+	b.StateManager.SetState(userID, "new_race_date", newContext)
+
+	msg := b.sendMessage(chatID, "Введите дату гонки в формате ДД.ММ.ГГГГ:")
+	b.addMessageIDToState(userID, msg.MessageID)
 }
 
-// handleNewRaceDate обрабатывает ввод даты гонки
+// Third update handleNewRaceDate to track messages
 func (b *Bot) handleNewRaceDate(message *tgbotapi.Message, state models.UserState) {
 	userID := message.From.ID
 	chatID := message.Chat.ID
+
+	// Delete user input message
+	b.deleteMessage(chatID, message.MessageID)
 
 	// Проверяем формат даты
 	dateStr := message.Text
 	date, err := time.Parse("02.01.2006", dateStr)
 	if err != nil {
-		b.sendMessage(chatID, "⚠️ Неверный формат даты. Используйте формат ДД.ММ.ГГГГ (например, 15.04.2025):")
+		msg := b.sendMessage(chatID, "⚠️ Неверный формат даты. Используйте формат ДД.ММ.ГГГГ (например, 15.04.2025):")
+		b.addMessageIDToState(userID, msg.MessageID)
 		return
 	}
 
-	// Сохраняем дату в контексте и запрашиваем класс автомобилей
-	b.StateManager.SetState(userID, "new_race_car_class", map[string]interface{}{
-		"season_id": state.ContextData["season_id"],
-		"name":      state.ContextData["name"],
-		"date":      date.Format("2006-01-02"),
-	})
+	// Copy existing context and add new data
+	newContext := state.ContextData
+	newContext["date"] = date.Format("2006-01-02")
 
-	b.sendMessage(chatID, "Введите класс автомобилей для гонки:")
+	// Сохраняем дату в контексте и запрашиваем класс автомобилей
+	b.StateManager.SetState(userID, "new_race_car_class", newContext)
+
+	msg := b.sendMessage(chatID, "Введите класс автомобилей для гонки:")
+	b.addMessageIDToState(userID, msg.MessageID)
 }
 
-// handleNewRaceCarClass обрабатывает ввод класса автомобилей
+// Fourth update handleNewRaceCarClass to track messages
 func (b *Bot) handleNewRaceCarClass(message *tgbotapi.Message, state models.UserState) {
 	userID := message.From.ID
 	chatID := message.Chat.ID
 
+	// Delete user input message
+	b.deleteMessage(chatID, message.MessageID)
+
 	// Проверяем валидность класса
 	carClass := strings.TrimSpace(message.Text)
 	if len(carClass) < 1 || len(carClass) > 30 {
-		b.sendMessage(chatID, "⚠️ Класс автомобилей должен содержать от 1 до 30 символов. Пожалуйста, введите корректный класс:")
+		msg := b.sendMessage(chatID, "⚠️ Класс автомобилей должен содержать от 1 до 30 символов. Пожалуйста, введите корректный класс:")
+		b.addMessageIDToState(userID, msg.MessageID)
 		return
 	}
 
+	// Copy existing context and add new data
+	newContext := state.ContextData
+	newContext["car_class"] = carClass
+	newContext["disciplines"] = []string{} // Пустой массив для выбранных дисциплин
+
 	// Сохраняем класс в контексте и предлагаем выбрать дисциплины
-	b.StateManager.SetState(userID, "new_race_disciplines", map[string]interface{}{
-		"season_id":   state.ContextData["season_id"],
-		"name":        state.ContextData["name"],
-		"date":        state.ContextData["date"],
-		"car_class":   carClass,
-		"disciplines": []string{}, // Пустой массив для выбранных дисциплин
-	})
+	b.StateManager.SetState(userID, "new_race_disciplines", newContext)
 
 	// Создаем клавиатуру для выбора дисциплин
 	keyboard := DisciplinesKeyboard([]string{})
 
-	b.sendMessageWithKeyboard(chatID, "Выберите дисциплины для гонки (можно выбрать несколько):", keyboard)
+	msg := b.sendMessageWithKeyboard(chatID, "Выберите дисциплины для гонки (можно выбрать несколько):", keyboard)
+	b.addMessageIDToState(userID, msg.MessageID)
 }
 
 // handleEditDriverName обрабатывает изменение имени гонщика
@@ -1423,29 +1471,35 @@ func (b *Bot) handleNewSeasonStartDate(message *tgbotapi.Message, state models.U
 	b.handleSeasons(message)
 }
 
-// Updated handleRegisterName to properly handle driver registration
 func (b *Bot) handleRegisterName(message *tgbotapi.Message, state models.UserState) {
 	userID := message.From.ID
 	chatID := message.Chat.ID
 
 	log.Printf("Processing driver name for user ID: %d", userID)
 
+	// Delete user message to keep chat clean
+	b.deleteMessage(chatID, message.MessageID)
+
 	// Check name validity
 	name := strings.TrimSpace(message.Text)
 	log.Printf("Provided name: '%s', length: %d", name, len(name))
 
 	if len(name) < 2 || len(name) > 30 {
-		b.sendMessage(chatID, "⚠️ Имя должно содержать от 2 до 30 символов. Пожалуйста, введите корректное имя:")
+		msg := b.sendMessage(chatID, "⚠️ Имя должно содержать от 2 до 30 символов. Пожалуйста, введите корректное имя:")
+		// Track this error message to delete it later
+		b.addMessageIDToState(userID, msg.MessageID)
 		return
 	}
 
-	// Save name in context and request description
-	log.Printf("Setting state to register_description with name: %s", name)
-	b.StateManager.SetState(userID, "register_description", map[string]interface{}{
-		"name": name,
-	})
+	// Continue registration flow - keep all tracked messages
+	newContext := state.ContextData
+	newContext["name"] = name
 
-	b.sendMessage(chatID, fmt.Sprintf("Отлично, %s! Теперь введите краткое описание о себе как о гонщике (или отправьте '-' чтобы пропустить):", name))
+	log.Printf("Setting state to register_description with name: %s", name)
+	b.StateManager.SetState(userID, "register_description", newContext)
+
+	msg := b.sendMessage(chatID, fmt.Sprintf("Отлично, %s! Теперь введите краткое описание о себе как о гонщике (или отправьте '-' чтобы пропустить):", name))
+	b.addMessageIDToState(userID, msg.MessageID)
 }
 
 // handleActiveRace показывает информацию о текущей активной гонке

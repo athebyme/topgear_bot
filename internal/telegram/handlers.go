@@ -894,7 +894,6 @@ func (b *Bot) handleResultDiscipline(message *tgbotapi.Message, state models.Use
 	}
 }
 
-// handleRegister completely fixed to handle driver registration
 func (b *Bot) handleRegister(message *tgbotapi.Message) {
 	userID := message.From.ID
 	chatID := message.Chat.ID
@@ -910,10 +909,32 @@ func (b *Bot) handleRegister(message *tgbotapi.Message) {
 		return
 	}
 
-	log.Printf("Setting user state to register_name")
-	b.StateManager.SetState(userID, "register_name", make(map[string]interface{}))
+	registrationContext := make(map[string]interface{})
+	registrationContext["messageIDs"] = []int{}
 
-	b.sendMessage(chatID, "📝 *Регистрация нового гонщика*\n\nВведите ваше гоночное имя (от 2 до 30 символов):")
+	log.Printf("Setting user state to register_name")
+	b.StateManager.SetState(userID, "register_name", registrationContext)
+
+	msg := b.sendMessage(chatID, "📝 *Регистрация нового гонщика*\n\nВведите ваше гоночное имя (от 2 до 30 символов):")
+
+	b.addMessageIDToState(userID, msg.MessageID)
+
+	b.deleteMessage(chatID, message.MessageID)
+}
+
+func (b *Bot) addMessageIDToState(userID int64, messageID int) {
+	state, exists := b.StateManager.GetState(userID)
+	if !exists {
+		return
+	}
+
+	messageIDs, ok := state.ContextData["messageIDs"].([]int)
+	if !ok {
+		messageIDs = []int{}
+	}
+
+	messageIDs = append(messageIDs, messageID)
+	b.StateManager.SetContextValue(userID, "messageIDs", messageIDs)
 }
 
 func (b *Bot) handleJoinRace(message *tgbotapi.Message) {

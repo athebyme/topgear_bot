@@ -765,6 +765,12 @@ func (b *Bot) callbackDisciplinesDone(query *tgbotapi.CallbackQuery) {
 		return
 	}
 
+	// Get tracked message IDs to delete
+	messageIDs, ok := state.ContextData["messageIDs"].([]int)
+	if !ok {
+		messageIDs = []int{}
+	}
+
 	// Создаем новую гонку
 	date, err := time.Parse("2006-01-02", state.ContextData["date"].(string))
 	if err != nil {
@@ -780,6 +786,7 @@ func (b *Bot) callbackDisciplinesDone(query *tgbotapi.CallbackQuery) {
 		CarClass:    state.ContextData["car_class"].(string),
 		Disciplines: disciplines,
 		Completed:   false,
+		State:       models.RaceStateNotStarted,
 	}
 
 	// Сохраняем гонку в БД
@@ -790,13 +797,18 @@ func (b *Bot) callbackDisciplinesDone(query *tgbotapi.CallbackQuery) {
 		return
 	}
 
+	// Delete all tracked messages
+	for _, msgID := range messageIDs {
+		b.deleteMessage(chatID, msgID)
+	}
+
+	// Delete the keyboard message
+	b.deleteMessage(chatID, query.Message.MessageID)
+
 	// Очищаем состояние
 	b.StateManager.ClearState(userID)
 
 	b.sendMessage(chatID, "✅ Новая гонка успешно создана!")
-
-	// Удаляем сообщение с кнопкой
-	b.deleteMessage(chatID, query.Message.MessageID)
 
 	// Показываем гонки сезона
 	b.callbackSeasonRaces(&tgbotapi.CallbackQuery{
@@ -2096,13 +2108,6 @@ func (b *Bot) callbackRegisterRace(query *tgbotapi.CallbackQuery) {
 		return
 	}
 
-	// Проверяем, открыта ли еще регистрация на гонку
-	//if race.State != models.RaceStateNotStarted {
-	//	b.answerCallbackQuery(query.ID, "⚠️ Регистрация на эту гонку уже закрыта", true)
-	//	b.sendMessage(chatID, "⚠️ Регистрация на эту гонку уже закрыта.")
-	//	return
-	//}
-
 	// Проверяем, не зарегистрирован ли уже гонщик
 	registered, err := b.RaceRepo.CheckDriverRegistered(raceID, driver.ID)
 	if err != nil {
@@ -2127,15 +2132,11 @@ func (b *Bot) callbackRegisterRace(query *tgbotapi.CallbackQuery) {
 		return
 	}
 
-	// Успешная регистрация - отправляем уведомление
 	b.answerCallbackQuery(query.ID, "✅ Вы успешно зарегистрированы на гонку!", false)
 	b.sendMessage(chatID, fmt.Sprintf("✅ Вы успешно зарегистрированы на гонку '%s'!", race.Name))
 
-	// Показываем обновленные детали гонки
-	// Сначала удаляем исходное сообщение
 	b.deleteMessage(chatID, messageID)
 
-	// Затем показываем детали гонки
 	b.showRaceDetails(chatID, raceID, userID)
 }
 
@@ -2525,7 +2526,6 @@ func (b *Bot) callbackSetPlace(query *tgbotapi.CallbackQuery) {
 	chatID := query.Message.Chat.ID
 	messageID := query.Message.MessageID
 
-	// Разбираем данные запроса: set_place:raceID:disciplineName:place
 	parts := strings.Split(query.Data, ":")
 	if len(parts) < 4 {
 		b.answerCallbackQuery(query.ID, "⚠️ Неверный формат запроса", true)
@@ -2591,10 +2591,8 @@ func (b *Bot) callbackSetPlace(query *tgbotapi.CallbackQuery) {
 		}
 	}
 
-	// Обновляем место для выбранной дисциплины
 	results[disciplineName] = place
 
-	// Пересчитываем общий счет
 	totalScore = 0
 	for _, p := range results {
 		switch p {
@@ -2607,19 +2605,16 @@ func (b *Bot) callbackSetPlace(query *tgbotapi.CallbackQuery) {
 		}
 	}
 
-	// Применяем штраф за реролл
 	if rerollPenalty > 0 {
 		totalScore -= rerollPenalty
 	}
 
-	// Получаем данные гонки для получения всех дисциплин
 	race, err := b.RaceRepo.GetByID(raceID)
 	if err != nil || race == nil {
 		b.answerCallbackQuery(query.ID, "⚠️ Ошибка получения данных гонки", true)
 		return
 	}
 
-	// Проверяем, все ли дисциплины заполнены
 	allDisciplinesFilled := true
 	for _, d := range race.Disciplines {
 		if _, exists := results[d]; !exists {
@@ -2629,10 +2624,6 @@ func (b *Bot) callbackSetPlace(query *tgbotapi.CallbackQuery) {
 	}
 
 	if allDisciplinesFilled {
-		// Все дисциплины заполнены, сохраняем результат
-		// (реализация сохранения результата)
-
-		// Показываем итоговый результат
 		text := "✅ *Все результаты успешно сохранены!*\n\n"
 
 		// Показываем места по дисциплинам
@@ -2667,7 +2658,6 @@ func (b *Bot) callbackSetPlace(query *tgbotapi.CallbackQuery) {
 
 		b.editMessageWithKeyboard(chatID, messageID, text, keyboard)
 	} else {
-		// Не все дисциплины заполнены, показываем оставшиеся
 		var remainingDisciplines []string
 		for _, d := range race.Disciplines {
 			if _, exists := results[d]; !exists {

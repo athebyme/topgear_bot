@@ -63,7 +63,6 @@ func (b *Bot) registerCallbackHandlers() {
 
 	// Регистрация существующих обработчиков
 	b.CallbackHandlers["start_race"] = b.callbackStartRace
-	b.CallbackHandlers["register_race"] = b.callbackRegisterRace
 	b.CallbackHandlers["driver_command"] = b.callbackDriverCommand
 	b.CallbackHandlers["admin_edit_result"] = b.callbackAdminEditResult
 	b.CallbackHandlers["admin_edit_discipline"] = b.callbackAdminEditDiscipline
@@ -252,7 +251,6 @@ func (b *Bot) handleCallbackQuery(query *tgbotapi.CallbackQuery) {
 
 // callbackRaces обрабатывает запрос на просмотр гонок
 func (b *Bot) callbackRaces(query *tgbotapi.CallbackQuery) {
-	// Имитируем команду /races
 	message := tgbotapi.Message{
 		From: query.From,
 		Chat: query.Message.Chat,
@@ -260,7 +258,6 @@ func (b *Bot) callbackRaces(query *tgbotapi.CallbackQuery) {
 
 	b.handleRaces(&message)
 
-	// Удаляем сообщение с кнопкой
 	b.deleteMessage(query.Message.Chat.ID, query.Message.MessageID)
 }
 
@@ -2256,14 +2253,103 @@ func (b *Bot) sendRaceReminder(raceID int) {
 }
 
 func (b *Bot) callbackActiveRace(query *tgbotapi.CallbackQuery) {
+	userID := query.From.ID
+	chatID := query.Message.Chat.ID
+
+	// Создаем сообщение на основе callback-запроса
 	message := tgbotapi.Message{
 		From: query.From,
 		Chat: query.Message.Chat,
 	}
 
-	b.handleActiveRace(&message)
+	parts := strings.Split(query.Data, ":")
+	if len(parts) > 1 {
+		// Если указан ID гонки, используем его
+		raceID, err := strconv.Atoi(parts[1])
+		if err == nil {
+			// Проверим, существует ли гонка и в нужном ли она статусе
+			race, err := b.RaceRepo.GetByID(raceID)
+			if err == nil && race != nil && race.State == models.RaceStateInProgress {
+				// Показываем информацию о конкретной гонке
+				b.showActiveRaceInfo(chatID, race, userID)
+				b.deleteMessage(chatID, query.Message.MessageID)
+				return
+			}
+		}
+	}
 
-	b.deleteMessage(query.Message.Chat.ID, query.Message.MessageID)
+	// Если ID не указан или гонка не найдена, показываем текущую активную гонку
+	b.handleActiveRace(&message)
+	b.deleteMessage(chatID, query.Message.MessageID)
+}
+
+// Новая функция для показа информации о конкретной активной гонке
+func (b *Bot) showActiveRaceInfo(chatID int64, race *models.Race, userID int64) {
+	// Получаем данные гонщика
+	driver, err := b.DriverRepo.GetByTelegramID(userID)
+	if err != nil {
+		log.Printf("Ошибка получения данных гонщика: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении данных гонщика.")
+		return
+	}
+
+	if driver == nil {
+		b.sendMessage(chatID, "⚠️ Вы не зарегистрированы как гонщик. Используйте /register чтобы зарегистрироваться.")
+		return
+	}
+
+	// Проверяем, зарегистрирован ли пользователь на эту гонку
+	registered, err := b.RaceRepo.CheckDriverRegistered(race.ID, driver.ID)
+	if err != nil {
+		log.Printf("Ошибка проверки регистрации: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при проверке вашей регистрации.")
+		return
+	}
+
+	// Получаем данные о машине гонщика (если зарегистрирован)
+	var carInfo string
+	if registered {
+		assignment, err := b.CarRepo.GetDriverCarAssignment(race.ID, driver.ID)
+		if err != nil {
+			log.Printf("Ошибка получения назначения машины: %v", err)
+		} else if assignment != nil {
+			car := assignment.Car
+			carInfo = fmt.Sprintf("\n\n*Ваша машина:*\n🚗 %s (%s)\n🔢 Номер: %d",
+				car.Name, car.Year, assignment.AssignmentNumber)
+
+			// Проверяем статус подтверждения машины
+			var confirmed bool
+			err = b.db.QueryRow(
+				"SELECT car_confirmed FROM race_registrations WHERE race_id = $1 AND driver_id = $2",
+				race.ID, driver.ID,
+			).Scan(&confirmed)
+
+			if err == nil {
+				if confirmed {
+					carInfo += "\n✅ Машина подтверждена"
+				} else {
+					carInfo += "\n⚠️ Машина не подтверждена. Используйте /mycar чтобы подтвердить"
+				}
+			}
+		}
+	}
+
+	// Формируем сообщение о текущей гонке
+	text := fmt.Sprintf("🏁 *Активная гонка: %s*\n\n", race.Name)
+	text += fmt.Sprintf("📅 Дата: %s\n", b.formatDate(race.Date))
+	text += fmt.Sprintf("🚗 Класс: %s\n", race.CarClass)
+	text += fmt.Sprintf("🏎️ Дисциплины: %s\n", strings.Join(race.Disciplines, ", "))
+	text += fmt.Sprintf("🏆 Статус: %s\n", getStatusText(race.State))
+
+	if registered {
+		text += "\n✅ Вы зарегистрированы на эту гонку" + carInfo
+	} else {
+		text += "\n❌ Вы не зарегистрированы на эту гонку"
+	}
+
+	// Создаем клавиатуру с действиями для гонки
+	keyboard := ActiveRaceKeyboard(race.ID, registered, race.State, b.IsAdmin(userID))
+	b.sendMessageWithKeyboard(chatID, text, keyboard)
 }
 
 func (b *Bot) callbackSelectDiscipline(query *tgbotapi.CallbackQuery) {

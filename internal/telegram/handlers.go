@@ -259,12 +259,11 @@ func (b *Bot) handleResultCarPhoto(message *tgbotapi.Message, state models.UserS
 	)
 }
 
-// Modified handleRaces to show race state
+// handleRaces обрабатывает запрос списка гонок
 func (b *Bot) handleRaces(message *tgbotapi.Message) {
 	userID := message.From.ID
 	chatID := message.Chat.ID
 
-	// Get active season
 	activeSeason, err := b.SeasonRepo.GetActive()
 	if err != nil {
 		log.Printf("Ошибка получения активного сезона: %v", err)
@@ -277,7 +276,6 @@ func (b *Bot) handleRaces(message *tgbotapi.Message) {
 		return
 	}
 
-	// Get races of the active season
 	races, err := b.RaceRepo.GetBySeason(activeSeason.ID)
 	if err != nil {
 		log.Printf("Ошибка получения гонок: %v", err)
@@ -285,32 +283,149 @@ func (b *Bot) handleRaces(message *tgbotapi.Message) {
 		return
 	}
 
+	// Prepare message text with detailed race information
 	text := fmt.Sprintf("🏁 *Гонки %s*\n\n", activeSeason.Name)
-
 	if len(races) == 0 {
 		text += "В этом сезоне пока нет запланированных гонок."
 	} else {
+		// Group races by state
+		var notStartedRaces []*models.Race
+		var inProgressRaces []*models.Race
+		var completedRaces []*models.Race
+
 		for _, race := range races {
-			var status string
 			switch race.State {
 			case models.RaceStateNotStarted:
-				status = "⏳ Регистрация"
+				notStartedRaces = append(notStartedRaces, race)
 			case models.RaceStateInProgress:
-				status = "🏎️ В процессе"
+				inProgressRaces = append(inProgressRaces, race)
 			case models.RaceStateCompleted:
-				status = "✅ Завершена"
+				completedRaces = append(completedRaces, race)
 			}
+		}
 
-			text += fmt.Sprintf("*%s* (%s)\n", race.Name, status)
-			text += fmt.Sprintf("📅 %s\n", b.formatDate(race.Date))
-			text += fmt.Sprintf("🚗 Класс: %s\n", race.CarClass)
-			text += fmt.Sprintf("🏎️ Дисциплины: %s\n\n", strings.Join(race.Disciplines, ", "))
+		// Add detailed race info to message text
+		if len(inProgressRaces) > 0 {
+			text += "*Текущие гонки:*\n"
+			for _, race := range inProgressRaces {
+				text += fmt.Sprintf("🏎️ *%s*\n", race.Name)
+				text += fmt.Sprintf("📅 %s\n", b.formatDate(race.Date))
+				text += fmt.Sprintf("🚗 Класс: %s\n", race.CarClass)
+				text += fmt.Sprintf("🏎️ Дисциплины: %s\n\n", strings.Join(race.Disciplines, ", "))
+			}
+		}
+
+		if len(notStartedRaces) > 0 {
+			text += "*Предстоящие гонки:*\n"
+			for _, race := range notStartedRaces {
+				text += fmt.Sprintf("⏳ *%s*\n", race.Name)
+				text += fmt.Sprintf("📅 %s\n", b.formatDate(race.Date))
+				text += fmt.Sprintf("🚗 Класс: %s\n", race.CarClass)
+				text += fmt.Sprintf("🏎️ Дисциплины: %s\n\n", strings.Join(race.Disciplines, ", "))
+			}
+		}
+
+		if len(completedRaces) > 0 {
+			text += "*Завершенные гонки:*\n"
+			for _, race := range completedRaces {
+				text += fmt.Sprintf("✅ *%s*\n", race.Name)
+				text += fmt.Sprintf("📅 %s\n", b.formatDate(race.Date))
+				text += fmt.Sprintf("🚗 Класс: %s\n", race.CarClass)
+				text += fmt.Sprintf("🏎️ Дисциплины: %s\n\n", strings.Join(race.Disciplines, ", "))
+			}
 		}
 	}
 
-	// Create keyboard for races management
-	keyboard := RacesKeyboard(races, b.IsAdmin(userID))
-	b.sendMessageWithKeyboard(chatID, text, keyboard)
+	// Simple keyboard with race actions
+	var keyboard [][]tgbotapi.InlineKeyboardButton
+
+	// Current races section (if any)
+	var currentRaceButtons []tgbotapi.InlineKeyboardButton
+	for _, race := range races {
+		if race.State == models.RaceStateInProgress {
+			btn := tgbotapi.NewInlineKeyboardButtonData(
+				fmt.Sprintf("🏎️ %s", race.Name),
+				fmt.Sprintf("activerace:%d", race.ID),
+			)
+			currentRaceButtons = append(currentRaceButtons, btn)
+		}
+	}
+
+	// Add current race buttons (one per row)
+	for _, btn := range currentRaceButtons {
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(btn))
+	}
+
+	// Upcoming races section (if any)
+	var upcomingRaceButtons []tgbotapi.InlineKeyboardButton
+	for _, race := range races {
+		if race.State == models.RaceStateNotStarted {
+			// Check if driver is registered
+			isRegistered := false
+			if driver, err := b.DriverRepo.GetByTelegramID(userID); err == nil && driver != nil {
+				if registered, err := b.RaceRepo.CheckDriverRegistered(race.ID, driver.ID); err == nil {
+					isRegistered = registered
+				}
+			}
+
+			// Create button with status indicator
+			btnText := fmt.Sprintf("⏳ %s", race.Name)
+			if isRegistered {
+				btnText = fmt.Sprintf("⏳ %s ✅", race.Name)
+			}
+
+			btn := tgbotapi.NewInlineKeyboardButtonData(
+				btnText,
+				fmt.Sprintf("race_details:%d", race.ID),
+			)
+			upcomingRaceButtons = append(upcomingRaceButtons, btn)
+		}
+	}
+
+	// Add upcoming race buttons (one per row)
+	for _, btn := range upcomingRaceButtons {
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(btn))
+	}
+
+	// Completed races section (if any)
+	var completedRaceButtons []tgbotapi.InlineKeyboardButton
+	for _, race := range races {
+		if race.State == models.RaceStateCompleted {
+			btn := tgbotapi.NewInlineKeyboardButtonData(
+				fmt.Sprintf("✅ %s", race.Name),
+				fmt.Sprintf("race_results:%d", race.ID),
+			)
+			completedRaceButtons = append(completedRaceButtons, btn)
+		}
+	}
+
+	// Add completed race buttons (one per row)
+	for _, btn := range completedRaceButtons {
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(btn))
+	}
+
+	// Add admin controls
+	if b.IsAdmin(userID) {
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("➕ Создать новую гонку", "new_race"),
+		))
+	}
+
+	// Add back button
+	keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData("🔙 Назад", "back_to_main"),
+	))
+
+	// Send the message with keyboard
+	msg := tgbotapi.NewMessage(chatID, text)
+	msg.ParseMode = tgbotapi.ModeMarkdown
+	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(keyboard...)
+
+	_, err = b.API.Send(msg)
+	if err != nil {
+		log.Printf("Ошибка отправки сообщения с клавиатурой: %v", err)
+		b.sendMessage(chatID, text)
+	}
 }
 
 // handleAddResult with corrected message
@@ -560,13 +675,7 @@ func (b *Bot) handleRegister(message *tgbotapi.Message) {
 
 	log.Printf("Starting driver registration for user ID: %d", userID)
 
-	// First check if user is already registered - with debug logs
-	exists, err := b.DriverRepo.CheckExists(userID)
-	if err != nil {
-		log.Printf("Error checking if driver exists: %v", err)
-		b.sendMessage(chatID, "⚠️ Произошла ошибка при проверке регистрации. Пожалуйста, попробуйте позже.")
-		return
-	}
+	exists, _ := b.DriverRepo.CheckExists(userID)
 
 	log.Printf("Driver exists check result: %v", exists)
 
@@ -575,15 +684,12 @@ func (b *Bot) handleRegister(message *tgbotapi.Message) {
 		return
 	}
 
-	// Start registration process - with debug logs
 	log.Printf("Setting user state to register_name")
 	b.StateManager.SetState(userID, "register_name", make(map[string]interface{}))
 
-	// More detailed message with clear instructions
 	b.sendMessage(chatID, "📝 *Регистрация нового гонщика*\n\nВведите ваше гоночное имя (от 2 до 30 символов):")
 }
 
-// This fixes a bug where /joinrace wasn't properly implemented
 func (b *Bot) handleJoinRace(message *tgbotapi.Message) {
 	userID := message.From.ID
 	chatID := message.Chat.ID
@@ -823,7 +929,6 @@ func (b *Bot) handleLeaveRace(message *tgbotapi.Message) {
 	userID := message.From.ID
 	chatID := message.Chat.ID
 
-	// Get driver information
 	driver, err := b.DriverRepo.GetByTelegramID(userID)
 	if err != nil {
 		log.Printf("Ошибка получения данных гонщика: %v", err)
@@ -832,7 +937,6 @@ func (b *Bot) handleLeaveRace(message *tgbotapi.Message) {
 	}
 
 	if driver == nil {
-		// FIXED: Changed from "/start" to "/register"
 		b.sendMessage(chatID, "⚠️ Вы не зарегистрированы как гонщик. Используйте /register чтобы зарегистрироваться.")
 		return
 	}

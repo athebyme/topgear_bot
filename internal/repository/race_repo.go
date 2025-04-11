@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"github.com/athebyme/forza-top-gear-bot/internal/models"
+	"log"
 )
 
 type RaceRepository struct {
@@ -86,12 +87,42 @@ func (r *RaceRepository) GetByID(id int) (*models.Race, error) {
 }
 
 func (r *RaceRepository) GetBySeason(seasonID int) ([]*models.Race, error) {
-	query := `
-		SELECT id, season_id, name, date, car_class, disciplines, completed
-		FROM races
-		WHERE season_id = $1
-		ORDER BY date DESC
-	`
+	log.Printf("RaceRepository.GetBySeason(): Запрос гонок для сезона ID=%d", seasonID)
+
+	// Проверяем наличие строки state в запросе - если в таблице нет этой колонки,
+	// используем упрощенный запрос
+	var hasStateColumn bool
+	err := r.db.QueryRow("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'races' AND column_name = 'state')").Scan(&hasStateColumn)
+	if err != nil {
+		log.Printf("Ошибка проверки наличия колонки state: %v", err)
+		hasStateColumn = false
+	}
+
+	var t string
+	if hasStateColumn {
+		t = "присутствует"
+	} else {
+		t = "отсутствует"
+	}
+
+	log.Printf("Колонка state %s в таблице races", t)
+
+	var query string
+	if hasStateColumn {
+		query = `
+			SELECT id, season_id, name, date, car_class, disciplines, completed, state
+			FROM races
+			WHERE season_id = $1
+			ORDER BY date DESC
+		`
+	} else {
+		query = `
+			SELECT id, season_id, name, date, car_class, disciplines, completed
+			FROM races
+			WHERE season_id = $1
+			ORDER BY date DESC
+		`
+	}
 
 	rows, err := r.db.Query(query, seasonID)
 	if err != nil {
@@ -103,40 +134,59 @@ func (r *RaceRepository) GetBySeason(seasonID int) ([]*models.Race, error) {
 
 	for rows.Next() {
 		var race models.Race
-		// var dateStr string // REMOVE
 		var disciplinesJSON string
 
-		err := rows.Scan(
-			&race.ID,
-			&race.SeasonID,
-			&race.Name,
-			&race.Date, // SCAN DIRECTLY INTO race.Date
-			&race.CarClass,
-			&disciplinesJSON,
-			&race.Completed,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("ошибка сканирования данных гонки в сезоне %d: %v", seasonID, err)
+		var scanErr error
+		if hasStateColumn {
+			scanErr = rows.Scan(
+				&race.ID,
+				&race.SeasonID,
+				&race.Name,
+				&race.Date,
+				&race.CarClass,
+				&disciplinesJSON,
+				&race.Completed,
+				&race.State,
+			)
+		} else {
+			scanErr = rows.Scan(
+				&race.ID,
+				&race.SeasonID,
+				&race.Name,
+				&race.Date,
+				&race.CarClass,
+				&disciplinesJSON,
+				&race.Completed,
+			)
+			// Устанавливаем состояние на основе флага Completed
+			if race.Completed {
+				race.State = models.RaceStateCompleted
+			} else {
+				race.State = models.RaceStateNotStarted
+			}
 		}
 
-		// race.Date, err = time.Parse("2006-01-02", dateStr) // REMOVE
-		// if err != nil {
-		// 	return nil, fmt.Errorf("ошибка разбора даты для гонки ID %d: %v", race.ID, err)
-		// }
+		if scanErr != nil {
+			return nil, fmt.Errorf("ошибка сканирования данных гонки: %v", scanErr)
+		}
 
 		race.Disciplines, err = models.DeserializeDisciplines(disciplinesJSON)
 		if err != nil {
-			// Wrap error for context
-			return nil, fmt.Errorf("ошибка десериализации дисциплин для гонки ID %d: %v", race.ID, err)
+			// Продолжаем работу с другими гонками в случае ошибки с дисциплинами
+			log.Printf("Ошибка десериализации дисциплин для гонки ID %d: %v", race.ID, err)
+			race.Disciplines = []string{"Неизвестные дисциплины"}
 		}
 
 		races = append(races, &race)
+		log.Printf("Получена гонка ID=%d, Name='%s', Completed=%v, State='%s'",
+			race.ID, race.Name, race.Completed, race.State)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("ошибка итерации по гонкам сезона %d: %v", seasonID, err)
+		return nil, fmt.Errorf("ошибка итерации по гонкам: %v", err)
 	}
 
+	log.Printf("RaceRepository.GetBySeason(): Найдено %d гонок для сезона ID=%d", len(races), seasonID)
 	return races, nil
 }
 
@@ -483,4 +533,107 @@ func (r *RaceRepository) CompleteRace(tx *sql.Tx, raceID int) error {
 	}
 
 	return nil
+}
+
+// GetAll возвращает все гонки
+func (r *RaceRepository) GetAll() ([]*models.Race, error) {
+	log.Printf("RaceRepository.GetAll(): Запрос на получение всех гонок")
+
+	// Проверяем наличие строки state в запросе - если в таблице нет этой колонки,
+	// используем упрощенный запрос
+	var hasStateColumn bool
+	err := r.db.QueryRow("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'races' AND column_name = 'state')").Scan(&hasStateColumn)
+	if err != nil {
+		log.Printf("Ошибка проверки наличия колонки state: %v", err)
+		hasStateColumn = false
+	}
+
+	var t string
+	if hasStateColumn {
+		t = "присутствует"
+	} else {
+		t = "отсутствует"
+	}
+
+	log.Printf("Колонка state %s в таблице races", t)
+
+	var query string
+	if hasStateColumn {
+		query = `
+			SELECT id, season_id, name, date, car_class, disciplines, completed, state
+			FROM races
+			ORDER BY date DESC
+		`
+	} else {
+		query = `
+			SELECT id, season_id, name, date, car_class, disciplines, completed
+			FROM races
+			ORDER BY date DESC
+		`
+	}
+
+	rows, err := r.db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("ошибка получения всех гонок: %v", err)
+	}
+	defer rows.Close()
+
+	var races []*models.Race
+
+	for rows.Next() {
+		var race models.Race
+		var disciplinesJSON string
+
+		var scanErr error
+		if hasStateColumn {
+			scanErr = rows.Scan(
+				&race.ID,
+				&race.SeasonID,
+				&race.Name,
+				&race.Date,
+				&race.CarClass,
+				&disciplinesJSON,
+				&race.Completed,
+				&race.State,
+			)
+		} else {
+			scanErr = rows.Scan(
+				&race.ID,
+				&race.SeasonID,
+				&race.Name,
+				&race.Date,
+				&race.CarClass,
+				&disciplinesJSON,
+				&race.Completed,
+			)
+			// Устанавливаем состояние на основе флага Completed
+			if race.Completed {
+				race.State = models.RaceStateCompleted
+			} else {
+				race.State = models.RaceStateNotStarted
+			}
+		}
+
+		if scanErr != nil {
+			return nil, fmt.Errorf("ошибка сканирования данных гонки: %v", scanErr)
+		}
+
+		race.Disciplines, err = models.DeserializeDisciplines(disciplinesJSON)
+		if err != nil {
+			// Продолжаем работу с другими гонками в случае ошибки с дисциплинами
+			log.Printf("Ошибка десериализации дисциплин для гонки ID %d: %v", race.ID, err)
+			race.Disciplines = []string{"Неизвестные дисциплины"}
+		}
+
+		races = append(races, &race)
+		log.Printf("Получена гонка ID=%d, Name='%s', Completed=%v, State='%s'",
+			race.ID, race.Name, race.Completed, race.State)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("ошибка итерации по гонкам: %v", err)
+	}
+
+	log.Printf("RaceRepository.GetAll(): Найдено %d гонок", len(races))
+	return races, nil
 }

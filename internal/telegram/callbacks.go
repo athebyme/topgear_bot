@@ -313,16 +313,70 @@ func (b *Bot) callbackDrivers(query *tgbotapi.CallbackQuery) {
 
 // callbackResults обрабатывает запрос на просмотр результатов
 func (b *Bot) callbackResults(query *tgbotapi.CallbackQuery) {
-	// Имитируем команду /results
-	message := tgbotapi.Message{
-		From: query.From,
-		Chat: query.Message.Chat,
+	chatID := query.Message.Chat.ID
+	messageID := query.Message.MessageID
+
+	// Получаем все сезоны
+	seasons, err := b.SeasonRepo.GetAll()
+	if err != nil {
+		log.Printf("Ошибка получения сезонов: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении списка сезонов.")
+		return
 	}
 
-	b.handleResults(&message)
+	// Создаем улучшенный UI
+	text := "📊 *Результаты гонок*\n\n"
 
-	// Удаляем сообщение с кнопкой
-	b.deleteMessage(query.Message.Chat.ID, query.Message.MessageID)
+	if len(seasons) == 0 {
+		text += "Пока нет созданных сезонов."
+	} else {
+		text += "Выберите сезон для просмотра результатов:"
+	}
+
+	// Создаем улучшенную клавиатуру с сезонами
+	var keyboard [][]tgbotapi.InlineKeyboardButton
+
+	// Добавляем заголовок для сезонов
+	if len(seasons) > 0 {
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"🏆 СЕЗОНЫ",
+				"no_action",
+			),
+		))
+
+		// Добавляем кнопки для каждого сезона
+		for _, season := range seasons {
+			// Добавляем индикатор активного сезона
+			var buttonText string
+			if season.Active {
+				buttonText = fmt.Sprintf("🟢 %s", season.Name)
+			} else {
+				buttonText = season.Name
+			}
+
+			keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					buttonText,
+					fmt.Sprintf("season_results:%d", season.ID),
+				),
+			))
+		}
+	}
+
+	// Добавляем кнопку возврата в главное меню
+	keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData(
+			"🔙 Главное меню",
+			"back_to_main",
+		),
+	))
+
+	// Отправляем сообщение с клавиатурой
+	b.sendMessageWithKeyboard(chatID, text, tgbotapi.NewInlineKeyboardMarkup(keyboard...))
+
+	// Удаляем исходное сообщение
+	b.deleteMessage(chatID, messageID)
 }
 
 // callbackSeasonRaces обрабатывает запрос на просмотр гонок сезона
@@ -343,52 +397,8 @@ func (b *Bot) callbackSeasonRaces(query *tgbotapi.CallbackQuery) {
 		return
 	}
 
-	// Получаем информацию о сезоне
-	season, err := b.SeasonRepo.GetByID(seasonID)
-	if err != nil {
-		log.Printf("Ошибка получения сезона: %v", err)
-		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении информации о сезоне.")
-		return
-	}
-
-	if season == nil {
-		b.sendMessage(chatID, "⚠️ Сезон не найден.")
-		return
-	}
-
-	// Получаем гонки сезона
-	races, err := b.RaceRepo.GetBySeason(seasonID)
-	if err != nil {
-		log.Printf("Ошибка получения гонок: %v", err)
-		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении списка гонок.")
-		return
-	}
-
-	// Формируем сообщение со списком гонок
-	text := fmt.Sprintf("🏁 *Гонки %s*\n\n", season.Name)
-
-	if len(races) == 0 {
-		text += "В этом сезоне пока нет запланированных гонок."
-	} else {
-		for _, race := range races {
-			var status string
-			if race.Completed {
-				status = "✅ Завершена"
-			} else {
-				status = "🕑 Предстоит"
-			}
-
-			text += fmt.Sprintf("*%s* (%s)\n", race.Name, status)
-			text += fmt.Sprintf("📅 %s\n", b.formatDate(race.Date))
-			text += fmt.Sprintf("🚗 Класс: %s\n", race.CarClass)
-			text += fmt.Sprintf("🏎️ Дисциплины: %s\n\n", strings.Join(race.Disciplines, ", "))
-		}
-	}
-
-	// Создаем клавиатуру с гонками и кнопкой создания новой гонки (для админов)
-	keyboard := RacesKeyboard(races, b.IsAdmin(userID))
-
-	b.sendMessageWithKeyboard(chatID, text, keyboard)
+	// Вызываем обновленную функцию handleSeasonRaces
+	b.handleSeasonRaces(chatID, seasonID, userID)
 
 	// Удаляем сообщение с кнопкой
 	b.deleteMessage(chatID, query.Message.MessageID)
@@ -1041,6 +1051,7 @@ func (b *Bot) callbackCancelDeleteRace(query *tgbotapi.CallbackQuery) {
 // callbackSeasonResults обрабатывает запрос на просмотр результатов сезона
 func (b *Bot) callbackSeasonResults(query *tgbotapi.CallbackQuery) {
 	chatID := query.Message.Chat.ID
+	messageID := query.Message.MessageID
 
 	// Получаем ID сезона из данных запроса
 	parts := strings.Split(query.Data, ":")
@@ -1076,37 +1087,131 @@ func (b *Bot) callbackSeasonResults(query *tgbotapi.CallbackQuery) {
 		return
 	}
 
-	if len(races) == 0 {
-		b.sendMessage(chatID, fmt.Sprintf("⚠️ В сезоне '%s' пока нет гонок.", season.Name))
-		return
+	// Фильтруем только завершенные гонки
+	var completedRaces []*models.Race
+	for _, race := range races {
+		if race.State == models.RaceStateCompleted {
+			completedRaces = append(completedRaces, race)
+		}
 	}
 
 	// Формируем сообщение с результатами сезона
 	text := fmt.Sprintf("📊 *Результаты сезона '%s'*\n\n", season.Name)
 
-	// Создаем клавиатуру с гонками сезона
-	var keyboard [][]tgbotapi.InlineKeyboardButton
-
-	for _, race := range races {
-		var status string
-		if race.Completed {
-			status = "✅"
-		} else {
-			status = "🕑"
-		}
-
-		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData(
-				fmt.Sprintf("%s %s", status, race.Name),
-				fmt.Sprintf("race_results:%d", race.ID),
-			),
-		))
+	if len(completedRaces) == 0 {
+		text += "В этом сезоне пока нет завершенных гонок."
+	} else {
+		text += fmt.Sprintf("*Завершено гонок:* %d из %d\n\n", len(completedRaces), len(races))
+		text += "Выберите гонку для просмотра детальных результатов:"
 	}
 
+	// Создаем клавиатуру для выбора гонки
+	var keyboard [][]tgbotapi.InlineKeyboardButton
+
+	// Заголовок для завершенных гонок
+	if len(completedRaces) > 0 {
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"✅ ЗАВЕРШЕННЫЕ ГОНКИ",
+				"no_action",
+			),
+		))
+
+		// Добавляем кнопки для каждой завершенной гонки
+		for _, race := range completedRaces {
+			keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					fmt.Sprintf("✅ %s", race.Name),
+					fmt.Sprintf("race_results:%d", race.ID),
+				),
+			))
+		}
+	}
+
+	// Если есть незавершенные гонки, добавляем информацию о них
+	var upcomingRaces []*models.Race
+	for _, race := range races {
+		if race.State != models.RaceStateCompleted {
+			upcomingRaces = append(upcomingRaces, race)
+		}
+	}
+
+	if len(upcomingRaces) > 0 {
+		// Добавляем разделитель, если есть завершенные гонки
+		if len(completedRaces) > 0 {
+			keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					"⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯",
+					"no_action",
+				),
+			))
+		}
+
+		// Заголовок для незавершенных гонок
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"⏳ НЕЗАВЕРШЕННЫЕ ГОНКИ",
+				"no_action",
+			),
+		))
+
+		// Ограничиваем количество отображаемых гонок
+		showLimit := 5
+		showingAll := len(upcomingRaces) <= showLimit
+
+		// Добавляем кнопки для незавершенных гонок
+		for i, race := range upcomingRaces {
+			if !showingAll && i >= showLimit {
+				break
+			}
+
+			var buttonText string
+			if race.State == models.RaceStateInProgress {
+				buttonText = fmt.Sprintf("🏎️ %s", race.Name)
+			} else {
+				buttonText = fmt.Sprintf("⏳ %s", race.Name)
+			}
+
+			keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					buttonText,
+					fmt.Sprintf("race_details:%d", race.ID),
+				),
+			))
+		}
+
+		// Если отображены не все гонки, добавляем кнопку "Показать все гонки"
+		if !showingAll {
+			keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					fmt.Sprintf("Показать все гонки (%d)", len(upcomingRaces)),
+					fmt.Sprintf("season_races:%d", seasonID),
+				),
+			))
+		}
+	}
+
+	// Добавляем кнопку просмотра статистики гонщиков
+	keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData(
+			"📊 Статистика гонщиков",
+			fmt.Sprintf("stats_season:%d", seasonID),
+		),
+	))
+
+	// Добавляем кнопку возврата к выбору сезона
+	keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData(
+			"🔙 Назад к сезонам",
+			"results",
+		),
+	))
+
+	// Отправляем сообщение с клавиатурой
 	b.sendMessageWithKeyboard(chatID, text, tgbotapi.NewInlineKeyboardMarkup(keyboard...))
 
-	// Удаляем сообщение с кнопкой
-	b.deleteMessage(chatID, query.Message.MessageID)
+	// Удаляем исходное сообщение
+	b.deleteMessage(chatID, messageID)
 }
 
 // callbackBackToMain обрабатывает возврат в главное меню
@@ -2607,4 +2712,322 @@ func (b *Bot) callbackSetPlace(query *tgbotapi.CallbackQuery) {
 
 		b.editMessageWithKeyboard(chatID, messageID, text, tgbotapi.NewInlineKeyboardMarkup(keyboard...))
 	}
+}
+
+// showUniversalRaceCard показывает универсальную карточку гонки,
+// используется во всех местах, где отображается информация о конкретной гонке
+func (b *Bot) showUniversalRaceCard(chatID int64, raceID int, userID int64) {
+	// Получаем информацию о гонке
+	race, err := b.RaceRepo.GetByID(raceID)
+	if err != nil {
+		log.Printf("Ошибка получения информации о гонке %d: %v", raceID, err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении информации о гонке.")
+		return
+	}
+
+	if race == nil {
+		log.Printf("Гонка с ID %d не найдена", raceID)
+		b.sendMessage(chatID, "⚠️ Гонка не найдена.")
+		return
+	}
+
+	// Проверяем, зарегистрирован ли пользователь на эту гонку
+	var isRegistered bool
+	var driver *models.Driver
+
+	if driverObj, err := b.DriverRepo.GetByTelegramID(userID); err == nil && driverObj != nil {
+		driver = driverObj
+		registered, err := b.RaceRepo.CheckDriverRegistered(raceID, driver.ID)
+		if err == nil {
+			isRegistered = registered
+		}
+	}
+
+	// Получаем зарегистрированных гонщиков
+	registrations, err := b.RaceRepo.GetRegisteredDrivers(raceID)
+	if err != nil {
+		log.Printf("Ошибка получения зарегистрированных гонщиков для гонки %d: %v", raceID, err)
+		// Продолжаем выполнение без списка регистраций
+	}
+
+	// Получаем информацию о сезоне
+	season, err := b.SeasonRepo.GetByID(race.SeasonID)
+	if err != nil {
+		log.Printf("Ошибка получения информации о сезоне %d: %v", race.SeasonID, err)
+		// Продолжаем выполнение без информации о сезоне
+	}
+
+	// Формируем заголовок в зависимости от статуса гонки
+	var title string
+	switch race.State {
+	case models.RaceStateInProgress:
+		title = fmt.Sprintf("🏎️ *АКТИВНАЯ ГОНКА: %s*", race.Name)
+	case models.RaceStateNotStarted:
+		title = fmt.Sprintf("⏳ *ПРЕДСТОЯЩАЯ ГОНКА: %s*", race.Name)
+	case models.RaceStateCompleted:
+		title = fmt.Sprintf("✅ *ЗАВЕРШЕННАЯ ГОНКА: %s*", race.Name)
+	default:
+		title = fmt.Sprintf("🏁 *ГОНКА: %s*", race.Name)
+	}
+
+	// Формируем основной текст
+	text := title + "\n\n"
+
+	// Добавляем информацию о сезоне
+	if season != nil {
+		text += fmt.Sprintf("🏆 Сезон: %s\n", season.Name)
+	}
+
+	// Добавляем основную информацию
+	text += fmt.Sprintf("📅 Дата: %s\n", b.formatDate(race.Date))
+	text += fmt.Sprintf("🚗 Класс: %s\n", race.CarClass)
+	text += fmt.Sprintf("🏎️ Дисциплины: %s\n\n", strings.Join(race.Disciplines, ", "))
+
+	// Информация о статусе регистрации пользователя
+	if driver != nil {
+		if isRegistered {
+			text += "✅ *Вы зарегистрированы на эту гонку*\n\n"
+
+			// Если гонка активна, добавляем информацию о машине
+			if race.State == models.RaceStateInProgress {
+				carAssignment, err := b.CarRepo.GetDriverCarAssignment(raceID, driver.ID)
+				if err == nil && carAssignment != nil {
+					text += "*Ваша машина:*\n"
+					text += fmt.Sprintf("🚗 %s (%s)\n", carAssignment.Car.Name, carAssignment.Car.Year)
+					text += fmt.Sprintf("🔢 Номер: %d\n\n", carAssignment.AssignmentNumber)
+
+					// Проверяем статус подтверждения машины
+					var confirmed bool
+					err = b.db.QueryRow(`
+						SELECT car_confirmed FROM race_registrations 
+						WHERE race_id = $1 AND driver_id = $2
+					`, raceID, driver.ID).Scan(&confirmed)
+
+					if err == nil {
+						if confirmed {
+							text += "✅ Машина подтверждена\n\n"
+						} else {
+							text += "⚠️ *Машина не подтверждена.* Используйте кнопку 'Моя машина' для подтверждения\n\n"
+						}
+					}
+				}
+			}
+		} else if race.State == models.RaceStateNotStarted {
+			text += "❌ *Вы не зарегистрированы на эту гонку*\n"
+			text += "Используйте кнопку 'Зарегистрироваться' ниже для участия\n\n"
+		}
+	}
+
+	// Информация об участниках
+	if len(registrations) > 0 {
+		text += fmt.Sprintf("👨‍🏎️ *Участники (%d):*\n", len(registrations))
+
+		// Ограничиваем список для компактности
+		showLimit := 8
+		showAll := len(registrations) <= showLimit
+
+		for i, reg := range registrations {
+			if !showAll && i >= showLimit {
+				break
+			}
+
+			// Добавляем статус подтверждения для активных гонок
+			if race.State == models.RaceStateInProgress {
+				var carConfirmed bool
+				err = b.db.QueryRow(`
+					SELECT car_confirmed FROM race_registrations 
+					WHERE race_id = $1 AND driver_id = $2
+				`, raceID, reg.DriverID).Scan(&carConfirmed)
+
+				if err == nil && carConfirmed {
+					text += fmt.Sprintf("• %s ✅\n", reg.DriverName)
+				} else {
+					text += fmt.Sprintf("• %s ⏳\n", reg.DriverName)
+				}
+			} else {
+				text += fmt.Sprintf("• %s\n", reg.DriverName)
+			}
+		}
+
+		if !showAll {
+			text += fmt.Sprintf("...и еще %d участников\n", len(registrations)-showLimit)
+		}
+
+		text += "\n"
+	} else {
+		text += "👨‍🏎️ *Пока нет зарегистрированных участников*\n\n"
+	}
+
+	// Дополнительная информация в зависимости от статуса гонки
+	switch race.State {
+	case models.RaceStateInProgress:
+		// Статистика подтверждений и результатов
+		var confirmedCount int
+		for _, reg := range registrations {
+			var carConfirmed bool
+			err = b.db.QueryRow(`
+				SELECT car_confirmed FROM race_registrations 
+				WHERE race_id = $1 AND driver_id = $2
+			`, raceID, reg.DriverID).Scan(&carConfirmed)
+
+			if err == nil && carConfirmed {
+				confirmedCount++
+			}
+		}
+
+		text += fmt.Sprintf("✅ *Подтверждено машин:* %d из %d\n", confirmedCount, len(registrations))
+
+		resultCount, _ := b.ResultRepo.GetResultCountByRaceID(raceID)
+		text += fmt.Sprintf("📊 *Подано результатов:* %d из %d\n", resultCount, len(registrations))
+
+	case models.RaceStateNotStarted:
+		// Время до начала гонки
+		timeDiff := race.Date.Sub(time.Now())
+		if timeDiff > 0 {
+			days := int(timeDiff.Hours() / 24)
+			hours := int(timeDiff.Hours()) % 24
+
+			if days > 0 {
+				text += fmt.Sprintf("⏱️ *До начала:* %d дней %d часов\n", days, hours)
+			} else {
+				text += fmt.Sprintf("⏱️ *До начала:* %d часов %d минут\n", hours, int(timeDiff.Minutes())%60)
+			}
+		}
+
+	case models.RaceStateCompleted:
+		// Топ победителей
+		results, err := b.ResultRepo.GetRaceResultsWithRerollPenalty(raceID)
+		if err == nil && len(results) > 0 {
+			text += "🏆 *Топ-3 победителя:*\n"
+
+			count := len(results)
+			if count > 3 {
+				count = 3
+			}
+
+			for i := 0; i < count; i++ {
+				text += fmt.Sprintf("%d. *%s* - %d очков\n", i+1, results[i].DriverName, results[i].TotalScore)
+			}
+
+			text += "\nИспользуйте кнопку 'Результаты' для просмотра полных результатов\n"
+		}
+	}
+
+	// Создаем клавиатуру с действиями
+	var keyboard [][]tgbotapi.InlineKeyboardButton
+
+	// Действия зависят от статуса гонки
+	switch race.State {
+	case models.RaceStateInProgress:
+		// Для активных гонок
+		if driver != nil && isRegistered {
+			// Кнопки для зарегистрированного участника
+			keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					"🚗 Моя машина",
+					fmt.Sprintf("my_car:%d", raceID),
+				),
+				tgbotapi.NewInlineKeyboardButtonData(
+					"➕ Добавить результат",
+					fmt.Sprintf("add_result:%d", raceID),
+				),
+			))
+		}
+
+		// Общие кнопки для активной гонки
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"📊 Прогресс гонки",
+				fmt.Sprintf("race_progress:%d", raceID),
+			),
+			tgbotapi.NewInlineKeyboardButtonData(
+				"🚗 Машины участников",
+				fmt.Sprintf("view_race_cars:%d", raceID),
+			),
+		))
+
+	case models.RaceStateNotStarted:
+		// Для предстоящих гонок
+		if driver != nil {
+			if isRegistered {
+				keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+					tgbotapi.NewInlineKeyboardButtonData(
+						"❌ Отменить регистрацию",
+						fmt.Sprintf("unregister_race:%d", raceID),
+					),
+				))
+			} else {
+				keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+					tgbotapi.NewInlineKeyboardButtonData(
+						"✅ Зарегистрироваться",
+						fmt.Sprintf("register_race:%d", raceID),
+					),
+				))
+			}
+		}
+
+		// Показать список участников
+		if len(registrations) > 0 {
+			keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					"👨‍🏎️ Список участников",
+					fmt.Sprintf("race_registrations:%d", raceID),
+				),
+			))
+		}
+
+	case models.RaceStateCompleted:
+		// Для завершенных гонок
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"🏆 Результаты",
+				fmt.Sprintf("race_results:%d", raceID),
+			),
+			tgbotapi.NewInlineKeyboardButtonData(
+				"🚗 Машины участников",
+				fmt.Sprintf("view_race_cars:%d", raceID),
+			),
+		))
+	}
+
+	// Административные кнопки
+	if b.IsAdmin(userID) {
+		var adminRow []tgbotapi.InlineKeyboardButton
+
+		switch race.State {
+		case models.RaceStateNotStarted:
+			adminRow = append(adminRow, tgbotapi.NewInlineKeyboardButtonData(
+				"🏁 Запустить гонку",
+				fmt.Sprintf("start_race:%d", raceID),
+			))
+		case models.RaceStateInProgress:
+			adminRow = append(adminRow, tgbotapi.NewInlineKeyboardButtonData(
+				"✅ Завершить гонку",
+				fmt.Sprintf("complete_race:%d", raceID),
+			))
+		}
+
+		if len(adminRow) > 0 {
+			keyboard = append(keyboard, adminRow)
+		}
+
+		// Панель администратора
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"⚙️ Админ-панель",
+				fmt.Sprintf("admin_race_panel:%d", raceID),
+			),
+		))
+	}
+
+	// Добавляем кнопку "Назад к гонкам"
+	keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData(
+			"🔙 Назад к гонкам",
+			"races",
+		),
+	))
+
+	// Отправляем сообщение с клавиатурой
+	b.sendMessageWithKeyboard(chatID, text, tgbotapi.NewInlineKeyboardMarkup(keyboard...))
 }

@@ -687,8 +687,13 @@ func (b *Bot) handleMyCar(message *tgbotapi.Message) {
 		return
 	}
 
+	// Show car information
+	showCarForRace(b, chatID, activeRace.ID, driver.ID)
+}
+
+func showCarForRace(b *Bot, chatID int64, raceID int, driverID int) {
 	// Get car assignment
-	assignment, err := b.CarRepo.GetDriverCarAssignment(activeRace.ID, driver.ID)
+	assignment, err := b.CarRepo.GetDriverCarAssignment(raceID, driverID)
 	if err != nil {
 		log.Printf("Ошибка получения назначения машины: %v", err)
 		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении информации о вашей машине.")
@@ -700,21 +705,28 @@ func (b *Bot) handleMyCar(message *tgbotapi.Message) {
 		return
 	}
 
+	// Get race info
+	race, err := b.RaceRepo.GetByID(raceID)
+	if err != nil || race == nil {
+		log.Printf("Ошибка получения гонки: %v", err)
+		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении информации о гонке.")
+		return
+	}
+
 	// Check if driver has confirmed their car
 	var confirmed bool
 	err = b.db.QueryRow(`
         SELECT car_confirmed FROM race_registrations
         WHERE race_id = $1 AND driver_id = $2
-    `, activeRace.ID, driver.ID).Scan(&confirmed)
+    `, raceID, driverID).Scan(&confirmed)
 
 	if err != nil {
 		log.Printf("Ошибка получения статуса подтверждения: %v", err)
-		b.sendMessage(chatID, "⚠️ Произошла ошибка при проверке статуса подтверждения машины.")
-		return
+		confirmed = false // Default to false if error
 	}
 
 	// Check if reroll was already used
-	rerollUsed, err := b.ResultRepo.GetDriverRerollStatus(activeRace.ID, driver.ID)
+	rerollUsed, err := b.ResultRepo.GetDriverRerollStatus(raceID, driverID)
 	if err != nil {
 		log.Printf("Ошибка проверки статуса реролла: %v", err)
 		rerollUsed = false // Default to false if error
@@ -722,7 +734,7 @@ func (b *Bot) handleMyCar(message *tgbotapi.Message) {
 
 	// Format car information
 	car := assignment.Car
-	text := fmt.Sprintf("🚗 *Ваша машина для гонки '%s'*\n\n", activeRace.Name)
+	text := fmt.Sprintf("🚗 *Ваша машина для гонки '%s'*\n\n", race.Name)
 	text += fmt.Sprintf("*%s (%s)*\n", car.Name, car.Year)
 	text += fmt.Sprintf("🔢 Номер: %d\n", assignment.AssignmentNumber)
 	text += fmt.Sprintf("💰 Цена: %d CR\n", car.Price)
@@ -748,7 +760,7 @@ func (b *Bot) handleMyCar(message *tgbotapi.Message) {
 		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData(
 				"✅ Подтвердить выбор машины",
-				fmt.Sprintf("confirm_car:%d", activeRace.ID),
+				fmt.Sprintf("confirm_car:%d", raceID),
 			),
 		))
 
@@ -757,7 +769,7 @@ func (b *Bot) handleMyCar(message *tgbotapi.Message) {
 			keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
 				tgbotapi.NewInlineKeyboardButtonData(
 					"🎲 Реролл (-1 балл)",
-					fmt.Sprintf("reroll_car:%d", activeRace.ID),
+					fmt.Sprintf("reroll_car:%d", raceID),
 				),
 			))
 		}
@@ -766,26 +778,26 @@ func (b *Bot) handleMyCar(message *tgbotapi.Message) {
 		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData(
 				"📊 Статус гонки",
-				fmt.Sprintf("race_progress:%d", activeRace.ID),
+				fmt.Sprintf("race_progress:%d", raceID),
 			),
 		))
 
 		// Add button to add results if the race is in progress
-		if activeRace.State == models.RaceStateInProgress {
+		if race.State == models.RaceStateInProgress {
 			keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
 				tgbotapi.NewInlineKeyboardButtonData(
 					"➕ Добавить результат",
-					fmt.Sprintf("add_result:%d", activeRace.ID),
+					fmt.Sprintf("add_result:%d", raceID),
 				),
 			))
 		}
 	}
 
-	// Add back button
+	// Add back button - важно! Всегда возвращаться к гонке, а не общему списку
 	keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
 		tgbotapi.NewInlineKeyboardButtonData(
 			"🔙 Назад к гонке",
-			fmt.Sprintf("race_details:%d", activeRace.ID),
+			fmt.Sprintf("race_details:%d", raceID),
 		),
 	))
 

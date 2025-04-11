@@ -49,17 +49,13 @@ func New(cfg *config.Config, db *sql.DB) (*Bot, error) {
 	raceRepo := repository.NewRaceRepository(db)
 	resultRepo := repository.NewResultRepository(db)
 	carRepo := repository.NewCarRepository(db)
-
-	// Create user state manager
 	stateManager := NewUserStateManager()
 
-	// Create admin IDs map for quick lookup
 	adminIDs := make(map[int64]bool)
 	for _, id := range cfg.Admin.Users {
 		adminIDs[id] = true
 	}
 
-	// Create bot instance
 	bot := &Bot{
 		API:              botAPI,
 		Config:           cfg,
@@ -79,16 +75,11 @@ func New(cfg *config.Config, db *sql.DB) (*Bot, error) {
 	bot.registerCarCommandHandlers()
 	bot.registerCallbackHandlers()
 
-	bot.registerRaceFlowCommandHandlers()
-	bot.registerRaceFlowCallbackHandlers()
-
-	// Проверим, что колбэк для регистрации гонки зарегистрирован
 	if _, exists := bot.CallbackHandlers["register_race"]; !exists {
 		log.Printf("ВНИМАНИЕ: Обработчик register_race не зарегистрирован!")
 		bot.CallbackHandlers["register_race"] = bot.callbackRegisterRace
 	}
 
-	// Проверим, что колбэк для лидерборда зарегистрирован
 	if _, exists := bot.CallbackHandlers["leaderboard"]; !exists {
 		log.Printf("ВНИМАНИЕ: Обработчик leaderboard не зарегистрирован!")
 		bot.CallbackHandlers["leaderboard"] = bot.callbackLeaderboard

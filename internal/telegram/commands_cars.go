@@ -13,6 +13,11 @@ import (
 func (b *Bot) registerCarCommandHandlers() {
 	b.CommandHandlers["cars"] = b.handleCars
 	b.CommandHandlers["carclass"] = b.handleCarClass
+	b.CommandHandlers["joinrace"] = b.handleJoinRace
+	b.CommandHandlers["leaverace"] = b.handleUnregisterFromRace
+	b.CommandHandlers["register"] = b.handleRegisterForRace
+	b.CommandHandlers["unregister"] = b.handleUnregisterFromRace
+	b.CommandHandlers["mycar"] = b.handleMyCar
 }
 
 // handleCars обрабатывает команду /cars
@@ -225,15 +230,6 @@ func (b *Bot) assignRandomCarsForRace(raceID int, carClass string) error {
 	}
 
 	return nil
-}
-
-// registerRaceFlowCommandHandlers registers handlers for race flow commands
-func (b *Bot) registerRaceFlowCommandHandlers() {
-	b.CommandHandlers["joinrace"] = b.handleJoinRace
-	b.CommandHandlers["leaverace"] = b.handleUnregisterFromRace
-	b.CommandHandlers["register"] = b.handleRegisterForRace
-	b.CommandHandlers["unregister"] = b.handleUnregisterFromRace
-	b.CommandHandlers["mycar"] = b.handleMyCar
 }
 
 // handleRegisterForRace handles the /register command to register for an upcoming race

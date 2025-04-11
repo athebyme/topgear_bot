@@ -25,25 +25,22 @@ func (r *ResultRepository) Create(result *models.RaceResult) (int, error) {
 		return 0, fmt.Errorf("ошибка сериализации результатов: %v", err)
 	}
 
-	// Вставляем новый результат
-	newResult, err := r.db.Exec(
+	// Вставляем новый результат и используем RETURNING для PostgreSQL
+	var resultID int
+	err = r.db.QueryRow(
 		`INSERT INTO race_results 
-		(race_id, driver_id, car_number, car_name, car_photo_url, results, total_score) 
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        (race_id, driver_id, car_number, car_name, car_photo_url, results, total_score) 
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING id`,
 		result.RaceID, result.DriverID, result.CarNumber, result.CarName,
 		result.CarPhotoURL, resultsJSON, result.TotalScore,
-	)
+	).Scan(&resultID)
+
 	if err != nil {
 		return 0, fmt.Errorf("ошибка создания результата: %v", err)
 	}
 
-	// Получаем ID нового результата
-	id, err := newResult.LastInsertId()
-	if err != nil {
-		return 0, fmt.Errorf("ошибка получения ID результата: %v", err)
-	}
-
-	return int(id), nil
+	return resultID, nil
 }
 
 // GetByID получает результат по ID
@@ -272,13 +269,13 @@ func (r *ResultRepository) CreateWithRerollPenalty(result *models.RaceResult) (i
 		return 0, fmt.Errorf("ошибка сериализации результатов: %v", err)
 	}
 
-	// Insert the new result with reroll penalty
+	// Используем RETURNING вместо LastInsertId
 	var id int
 	err = r.db.QueryRow(
 		`INSERT INTO race_results 
-		(race_id, driver_id, car_number, car_name, car_photo_url, results, total_score, reroll_penalty) 
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		RETURNING id`,
+        (race_id, driver_id, car_number, car_name, car_photo_url, results, total_score, reroll_penalty) 
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING id`,
 		result.RaceID, result.DriverID, result.CarNumber, result.CarName,
 		result.CarPhotoURL, resultsJSON, result.TotalScore, result.RerollPenalty,
 	).Scan(&id)

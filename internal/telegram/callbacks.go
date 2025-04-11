@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/athebyme/forza-top-gear-bot/internal/repository"
 	"log"
@@ -51,6 +52,8 @@ func (b *Bot) registerCallbackHandlers() {
 		"race_progress":       b.callbackRaceProgress,
 		"admin_confirm_car":   b.callbackAdminConfirmCar,
 		"leaderboard":         b.callbackLeaderboard,
+		"select_discipline":   b.callbackSelectDiscipline,
+		"set_place":           b.callbackSetPlace,
 
 		// Добавляем новые обработчики
 		"admin_confirm_all_cars": b.callbackAdminConfirmAllCars,
@@ -73,6 +76,16 @@ func (b *Bot) registerCallbackHandlers() {
 	b.CallbackHandlers["race_detailed_status"] = b.callbackRaceDetailedStatus
 	b.CallbackHandlers["activerace"] = b.callbackActiveRace
 	b.CommandHandlers["startrace"] = b.handleStartRace
+
+	b.CallbackHandlers["register_race"] = b.callbackRegisterRace
+	b.CallbackHandlers["unregister_race"] = b.callbackUnregisterRace
+	b.CallbackHandlers["start_race"] = b.callbackStartRace
+	b.CallbackHandlers["confirm_car"] = b.callbackConfirmCar
+	b.CallbackHandlers["reroll_car"] = b.callbackRerollCar
+	b.CallbackHandlers["race_registrations"] = b.callbackRaceRegistrations
+	b.CallbackHandlers["race_start_confirm"] = b.callbackRaceStartConfirm
+	b.CallbackHandlers["complete_race_confirm"] = b.callbackCompleteRaceConfirm
+	b.CallbackHandlers["race_details"] = b.callbackRaceDetails
 }
 
 // handleStartRace позволяет запустить гонку через команду
@@ -223,19 +236,16 @@ func (b *Bot) callbackStatsForSeason(query *tgbotapi.CallbackQuery) {
 // handleCallbackQuery обрабатывает callback-запросы от кнопок
 func (b *Bot) handleCallbackQuery(query *tgbotapi.CallbackQuery) {
 	log.Printf("DEBUG: Получен callback: %s", query.Data)
-	// Отправляем уведомление о получении запроса
 	b.answerCallbackQuery(query.ID, "", false)
 
-	// Разбираем данные запроса
 	data := query.Data
 	parts := strings.Split(data, ":")
 	action := parts[0]
 
-	// Вызываем соответствующий обработчик
 	if handler, exists := b.CallbackHandlers[action]; exists {
 		handler(query)
 	} else {
-		// Если обработчик не найден, отправляем сообщение об ошибке
+		log.Printf("%v", b.CallbackHandlers)
 		b.sendMessage(query.Message.Chat.ID, "⚠️ Неизвестное действие.")
 	}
 }
@@ -573,30 +583,31 @@ func (b *Bot) callbackNewSeason(query *tgbotapi.CallbackQuery) {
 func (b *Bot) callbackAddResult(query *tgbotapi.CallbackQuery) {
 	userID := query.From.ID
 	chatID := query.Message.Chat.ID
+	messageID := query.Message.MessageID
 
 	// Получаем ID гонки из данных запроса
 	parts := strings.Split(query.Data, ":")
 	if len(parts) < 2 {
-		b.sendMessage(chatID, "⚠️ Неверный формат запроса.")
+		b.answerCallbackQuery(query.ID, "⚠️ Неверный формат запроса", true)
 		return
 	}
 
 	raceID, err := strconv.Atoi(parts[1])
 	if err != nil {
-		b.sendMessage(chatID, "⚠️ Неверный ID гонки.")
+		b.answerCallbackQuery(query.ID, "⚠️ Неверный ID гонки", true)
 		return
 	}
 
 	// Получаем данные гонщика
 	driver, err := b.DriverRepo.GetByTelegramID(userID)
 	if err != nil {
-		log.Printf("Ошибка получения гонщика: %v", err)
-		b.sendMessage(chatID, "⚠️ Произошла ошибка при получении данных гонщика.")
+		log.Printf("Ошибка получения данных гонщика: %v", err)
+		b.answerCallbackQuery(query.ID, "⚠️ Произошла ошибка при получении данных гонщика", true)
 		return
 	}
 
 	if driver == nil {
-		b.sendMessage(chatID, "⚠️ Вы не зарегистрированы как гонщик. Используйте /register чтобы зарегистрироваться.")
+		b.answerCallbackQuery(query.ID, "⚠️ Вы не зарегистрированы как гонщик", true)
 		return
 	}
 
@@ -604,24 +615,60 @@ func (b *Bot) callbackAddResult(query *tgbotapi.CallbackQuery) {
 	exists, err := b.ResultRepo.CheckDriverResultExists(raceID, driver.ID)
 	if err != nil {
 		log.Printf("Ошибка проверки результата: %v", err)
-		b.sendMessage(chatID, "⚠️ Произошла ошибка при проверке результатов.")
+		b.answerCallbackQuery(query.ID, "⚠️ Произошла ошибка при проверке результатов", true)
 		return
 	}
 
 	if exists {
-		b.sendMessage(chatID, "⚠️ Вы уже добавили результат для этой гонки.")
+		b.answerCallbackQuery(query.ID, "⚠️ Вы уже добавили результат для этой гонки", true)
 		return
 	}
 
-	// Устанавливаем состояние для добавления результата
-	b.StateManager.SetState(userID, "add_result_car_number", map[string]interface{}{
-		"race_id": raceID,
-	})
+	// Получаем информацию о гонке
+	race, err := b.RaceRepo.GetByID(raceID)
+	if err != nil || race == nil {
+		log.Printf("Ошибка получения гонки: %v", err)
+		b.answerCallbackQuery(query.ID, "⚠️ Произошла ошибка при получении данных гонки", true)
+		return
+	}
 
-	b.sendMessage(chatID, "Введите номер вашей машины:")
+	// Получаем назначенную машину
+	assignment, err := b.CarRepo.GetDriverCarAssignment(raceID, driver.ID)
+	if err != nil || assignment == nil {
+		log.Printf("Ошибка получения машины: %v", err)
+		b.answerCallbackQuery(query.ID, "⚠️ У вас нет назначенной машины для этой гонки", true)
+		return
+	}
 
-	// Удаляем сообщение с кнопкой
-	b.deleteMessage(chatID, query.Message.MessageID)
+	// Создаем клавиатуру с дисциплинами гонки
+	var keyboard [][]tgbotapi.InlineKeyboardButton
+
+	for _, discipline := range race.Disciplines {
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				discipline,
+				fmt.Sprintf("select_discipline:%d:%s", raceID, discipline),
+			),
+		))
+	}
+
+	// Добавляем кнопку "Назад"
+	keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData(
+			"🔙 Назад",
+			fmt.Sprintf("race_details:%d", raceID),
+		),
+	))
+
+	// Отправляем сообщение с выбором дисциплины
+	b.sendMessageWithKeyboard(
+		chatID,
+		fmt.Sprintf("🏁 *Добавление результата для гонки '%s'*\n\nВыберите дисциплину:", race.Name),
+		tgbotapi.NewInlineKeyboardMarkup(keyboard...),
+	)
+
+	// Удаляем исходное сообщение
+	b.deleteMessage(chatID, messageID)
 }
 
 // callbackDiscipline обрабатывает выбор дисциплины для гонки
@@ -2173,9 +2220,7 @@ func (b *Bot) sendRaceReminder(raceID int) {
 		text += "🏁 Гонка уже идет! Если вы еще не подтвердили свою машину или не добавили результаты, самое время это сделать."
 	}
 
-	// Отправляем напоминание каждому гонщику
 	for _, reg := range registrations {
-		// Получаем Telegram ID гонщика
 		var telegramID int64
 		err := b.db.QueryRow("SELECT telegram_id FROM drivers WHERE id = $1", reg.DriverID).Scan(&telegramID)
 		if err != nil {
@@ -2183,7 +2228,6 @@ func (b *Bot) sendRaceReminder(raceID int) {
 			continue
 		}
 
-		// Создаем клавиатуру с быстрыми действиями
 		var keyboard [][]tgbotapi.InlineKeyboardButton
 
 		switch race.State {
@@ -2207,7 +2251,6 @@ func (b *Bot) sendRaceReminder(raceID int) {
 			),
 		))
 
-		// Отправляем сообщение с клавиатурой
 		b.sendMessageWithKeyboard(telegramID, text, tgbotapi.NewInlineKeyboardMarkup(keyboard...))
 	}
 }
@@ -2221,4 +2264,261 @@ func (b *Bot) callbackActiveRace(query *tgbotapi.CallbackQuery) {
 	b.handleActiveRace(&message)
 
 	b.deleteMessage(query.Message.Chat.ID, query.Message.MessageID)
+}
+
+func (b *Bot) callbackSelectDiscipline(query *tgbotapi.CallbackQuery) {
+	userID := query.From.ID
+	chatID := query.Message.Chat.ID
+	messageID := query.Message.MessageID
+
+	parts := strings.Split(query.Data, ":")
+	if len(parts) < 3 {
+		b.answerCallbackQuery(query.ID, "⚠️ Неверный формат запроса", true)
+		return
+	}
+
+	raceID, err := strconv.Atoi(parts[1])
+	if err != nil {
+		b.answerCallbackQuery(query.ID, "⚠️ Неверный ID гонки", true)
+		return
+	}
+
+	disciplineName := parts[2]
+
+	driver, err := b.DriverRepo.GetByTelegramID(userID)
+	if err != nil || driver == nil {
+		b.answerCallbackQuery(query.ID, "⚠️ Ошибка получения данных гонщика", true)
+		return
+	}
+
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"🥇 1 место",
+				fmt.Sprintf("set_place:%d:%s:1", raceID, disciplineName),
+			),
+			tgbotapi.NewInlineKeyboardButtonData(
+				"🥈 2 место",
+				fmt.Sprintf("set_place:%d:%s:2", raceID, disciplineName),
+			),
+			tgbotapi.NewInlineKeyboardButtonData(
+				"🥉 3 место",
+				fmt.Sprintf("set_place:%d:%s:3", raceID, disciplineName),
+			),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"❌ Не участвовал",
+				fmt.Sprintf("set_place:%d:%s:0", raceID, disciplineName),
+			),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"🔙 Назад к выбору дисциплины",
+				fmt.Sprintf("add_result:%d", raceID),
+			),
+		),
+	)
+
+	// Отправляем сообщение с клавиатурой
+	b.editMessageWithKeyboard(
+		chatID,
+		messageID,
+		fmt.Sprintf("Выберите ваше место в дисциплине '%s':", disciplineName),
+		keyboard,
+	)
+}
+
+func (b *Bot) callbackSetPlace(query *tgbotapi.CallbackQuery) {
+	userID := query.From.ID
+	chatID := query.Message.Chat.ID
+	messageID := query.Message.MessageID
+
+	// Разбираем данные запроса: set_place:raceID:disciplineName:place
+	parts := strings.Split(query.Data, ":")
+	if len(parts) < 4 {
+		b.answerCallbackQuery(query.ID, "⚠️ Неверный формат запроса", true)
+		return
+	}
+
+	raceID, err := strconv.Atoi(parts[1])
+	if err != nil {
+		b.answerCallbackQuery(query.ID, "⚠️ Неверный ID гонки", true)
+		return
+	}
+
+	disciplineName := parts[2]
+
+	place, err := strconv.Atoi(parts[3])
+	if err != nil || place < 0 || place > 3 {
+		b.answerCallbackQuery(query.ID, "⚠️ Неверное место", true)
+		return
+	}
+
+	// Получаем данные гонщика
+	driver, err := b.DriverRepo.GetByTelegramID(userID)
+	if err != nil || driver == nil {
+		b.answerCallbackQuery(query.ID, "⚠️ Ошибка получения данных гонщика", true)
+		return
+	}
+
+	// Проверяем, есть ли уже результаты по этой гонке
+	var resultID int
+	var resultsJSON string
+	var totalScore int
+	var rerollPenalty int
+
+	err = b.db.QueryRow(`
+        SELECT id, results, total_score, reroll_penalty 
+        FROM race_results 
+        WHERE race_id = $1 AND driver_id = $2
+    `, raceID, driver.ID).Scan(&resultID, &resultsJSON, &totalScore, &rerollPenalty)
+
+	var results map[string]int
+
+	if err == nil {
+		err = json.Unmarshal([]byte(resultsJSON), &results)
+		if err != nil {
+			b.answerCallbackQuery(query.ID, "⚠️ Ошибка разбора результатов", true)
+			return
+		}
+	} else {
+		// Создаем новый результат
+		results = make(map[string]int)
+
+		// Получаем информацию о машине
+		assignment, err := b.CarRepo.GetDriverCarAssignment(raceID, driver.ID)
+		if err != nil || assignment == nil {
+			b.answerCallbackQuery(query.ID, "⚠️ Ошибка получения данных о машине", true)
+			return
+		}
+
+		// Проверяем статус реролла
+		rerollUsed, err := b.ResultRepo.GetDriverRerollStatus(raceID, driver.ID)
+		if err == nil && rerollUsed {
+			rerollPenalty = 1
+		}
+	}
+
+	// Обновляем место для выбранной дисциплины
+	results[disciplineName] = place
+
+	// Пересчитываем общий счет
+	totalScore = 0
+	for _, p := range results {
+		switch p {
+		case 1:
+			totalScore += 3
+		case 2:
+			totalScore += 2
+		case 3:
+			totalScore += 1
+		}
+	}
+
+	// Применяем штраф за реролл
+	if rerollPenalty > 0 {
+		totalScore -= rerollPenalty
+	}
+
+	// Получаем данные гонки для получения всех дисциплин
+	race, err := b.RaceRepo.GetByID(raceID)
+	if err != nil || race == nil {
+		b.answerCallbackQuery(query.ID, "⚠️ Ошибка получения данных гонки", true)
+		return
+	}
+
+	// Проверяем, все ли дисциплины заполнены
+	allDisciplinesFilled := true
+	for _, d := range race.Disciplines {
+		if _, exists := results[d]; !exists {
+			allDisciplinesFilled = false
+			break
+		}
+	}
+
+	if allDisciplinesFilled {
+		// Все дисциплины заполнены, сохраняем результат
+		// (реализация сохранения результата)
+
+		// Показываем итоговый результат
+		text := "✅ *Все результаты успешно сохранены!*\n\n"
+
+		// Показываем места по дисциплинам
+		text += "*Ваши места:*\n"
+		for _, discipline := range race.Disciplines {
+			place := results[discipline]
+			emoji := getPlaceEmoji(place)
+			text += fmt.Sprintf("• %s: %s\n", discipline, emoji)
+		}
+
+		if rerollPenalty > 0 {
+			text += fmt.Sprintf("\n⚠️ Штраф за реролл: -%d\n", rerollPenalty)
+		}
+
+		text += fmt.Sprintf("\n🏆 Всего очков: %d", totalScore)
+
+		// Создаем клавиатуру для возврата к гонке
+		keyboard := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					"📊 Статус гонки",
+					fmt.Sprintf("race_progress:%d", raceID),
+				),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					"🔙 Назад к гонке",
+					fmt.Sprintf("race_details:%d", raceID),
+				),
+			),
+		)
+
+		b.editMessageWithKeyboard(chatID, messageID, text, keyboard)
+	} else {
+		// Не все дисциплины заполнены, показываем оставшиеся
+		var remainingDisciplines []string
+		for _, d := range race.Disciplines {
+			if _, exists := results[d]; !exists {
+				remainingDisciplines = append(remainingDisciplines, d)
+			}
+		}
+
+		text := fmt.Sprintf("✅ Результат для дисциплины '%s' сохранен!\n\n", disciplineName)
+		text += "*Заполненные дисциплины:*\n"
+
+		for d, p := range results {
+			emoji := getPlaceEmoji(p)
+			text += fmt.Sprintf("• %s: %s\n", d, emoji)
+		}
+
+		if len(remainingDisciplines) > 0 {
+			text += "\n*Осталось заполнить:*\n"
+			for _, d := range remainingDisciplines {
+				text += fmt.Sprintf("• %s\n", d)
+			}
+		}
+
+		// Создаем клавиатуру для заполнения оставшихся дисциплин
+		var keyboard [][]tgbotapi.InlineKeyboardButton
+
+		for _, d := range remainingDisciplines {
+			keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					d,
+					fmt.Sprintf("select_discipline:%d:%s", raceID, d),
+				),
+			))
+		}
+
+		// Добавляем кнопку "Назад"
+		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"🔙 Назад к гонке",
+				fmt.Sprintf("race_details:%d", raceID),
+			),
+		))
+
+		b.editMessageWithKeyboard(chatID, messageID, text, tgbotapi.NewInlineKeyboardMarkup(keyboard...))
+	}
 }

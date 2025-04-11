@@ -566,6 +566,7 @@ func (r *CarRepository) GetDriverCarAssignment(raceID int, driverID int) (*model
 	var assignment models.RaceCarAssignment
 	var car models.Car
 	var yearRaw sql.NullInt64
+	var previousCarID sql.NullInt64
 
 	err := r.db.QueryRow(query, raceID, driverID).Scan(
 		&assignment.ID,
@@ -575,7 +576,7 @@ func (r *CarRepository) GetDriverCarAssignment(raceID int, driverID int) (*model
 		&assignment.AssignmentNumber,
 		&assignment.CreatedAt,
 		&assignment.IsReroll,
-		&assignment.PreviousCarID,
+		&previousCarID, // Используем sql.NullInt64 для previous_car_id
 		&car.ID,
 		&car.Name,
 		&yearRaw,
@@ -595,9 +596,15 @@ func (r *CarRepository) GetDriverCarAssignment(raceID int, driverID int) (*model
 
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, nil // No assignment found
+			return nil, nil // Назначение не найдено
 		}
 		return nil, fmt.Errorf("ошибка получения назначения машины: %v", err)
+	}
+
+	if previousCarID.Valid {
+		assignment.PreviousCarID = int(previousCarID.Int64)
+	} else {
+		assignment.PreviousCarID = -1
 	}
 
 	if yearRaw.Valid {
